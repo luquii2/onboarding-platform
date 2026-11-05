@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Главная — Школа «Шаг»</title>
+  <link rel="stylesheet" href="style.css">
+  <!-- Сюда будет вставлен скрипт виджета онбординга:
+  <script src="https://<наш-сервер>/widget.js" data-site-key="..."></script> -->
+</head>
+<body>
+<header class="site-header">
+  <div class="container header-inner">
+    <a href="index.html" class="logo" id="logo">Школа <span>«Шаг»</span></a>
+    <nav class="main-nav" id="main-nav">
+      <a href="index.html" id="nav-index" class="active">Главная</a>
+      <a href="courses.html" id="nav-courses">Курсы</a>
+      <a href="course.html" id="nav-course">О курсе</a>
+      <a href="signup.html" id="nav-signup">Запись</a>
+    </nav>
+    <a href="signup.html" class="btn header-cta" id="header-signup">Записаться</a>
+    <button class="menu-toggle" id="menu-toggle" aria-label="Меню">☰</button>
+  </div>
+</header>
+<main>
+  <section class="hero">
+    <div class="container hero-inner">
+      <div>
+        <h1 id="hero-title">Новая профессия — шаг за шагом</h1>
+        <p id="hero-text">Онлайн-курсы по дизайну, программированию и маркетингу. Короткие уроки, практика и обратная связь от наставника.</p>
+        <div class="hero-actions">
+          <a href="courses.html" class="btn" id="hero-courses">Выбрать курс</a>
+          <a href="signup.html" class="btn btn-outline" id="hero-signup">Бесплатный урок</a>
+        </div>
+      </div>
+      <div class="hero-art" id="hero-image">🎓</div>
+    </div>
+  </section>
+  <section class="section">
+    <div class="container">
+      <h2>Почему «Шаг»</h2>
+      <div class="features" id="features">
+        <div class="feature" id="feature-practice"><div class="icon">🛠️</div><h3>Практика</h3><p>В каждом уроке — задание, которое проверяет наставник.</p></div>
+        <div class="feature" id="feature-schedule"><div class="icon">⏰</div><h3>Свой темп</h3><p>Учитесь, когда удобно: доступ к урокам 24/7.</p></div>
+        <div class="feature" id="feature-certificate"><div class="icon">📜</div><h3>Сертификат</h3><p>После защиты проекта выдаём сертификат школы.</p></div>
+      </div>
+    </div>
+  </section>
+</main>
+<footer class="site-footer">
+  <div class="container footer-inner">
+    <span>© 2026 Школа «Шаг». Тестовый сайт для проверки виджета онбординга.</span>
+    <span id="footer-contacts">hello@shag-school.ru · +7 (900) 000-00-00</span>
+  </div>
+</footer>
+<script>
+  document.getElementById('menu-toggle').addEventListener('click', function () {
+    document.getElementById('main-nav').classList.toggle('open');
+  });
+</script>
+<script src="http://localhost:5173/widget.js" data-editor-origin="http://localhost:5173" defer></script>
+</body>
+</html>
+

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Курсы — Школа «Шаг»</title>
+  <link rel="stylesheet" href="style.css">
+  <!-- Сюда будет вставлен скрипт виджета онбординга:
+  <script src="https://<наш-сервер>/widget.js" data-site-key="..."></script> -->
+</head>
+<body>
+<header class="site-header">
+  <div class="container header-inner">
+    <a href="index.html" class="logo" id="logo">Школа <span>«Шаг»</span></a>
+    <nav class="main-nav" id="main-nav">
+      <a href="index.html" id="nav-index">Главная</a>
+      <a href="courses.html" id="nav-courses" class="active">Курсы</a>
+      <a href="course.html" id="nav-course">О курсе</a>
+      <a href="signup.html" id="nav-signup">Запись</a>
+    </nav>
+    <a href="signup.html" class="btn header-cta" id="header-signup">Записаться</a>
+    <button class="menu-toggle" id="menu-toggle" aria-label="Меню">☰</button>
+  </div>
+</header>
+<main>
+  <section class="section">
+    <div class="container">
+      <h2 id="courses-title">Каталог курсов</h2>
+      <div class="filters" id="filters">
+        <button class="filter active" data-filter="all">Все</button>
+        <button class="filter" data-filter="design">Дизайн</button>
+        <button class="filter" data-filter="code">Программирование</button>
+        <button class="filter" data-filter="marketing">Маркетинг</button>
+      </div>
+      <div class="courses" id="courses-list">
+        <div class="course-card" data-category="design" id="course-1">
+          <div class="course-cover" style="background:#FDE68A">🎨</div>
+          <span class="tag">Дизайн</span>
+          <h3>Основы веб-дизайна</h3>
+          <p>Figma, композиция и цвет. Соберёте первый макет сайта.</p>
+          <div class="course-footer"><span class="price">12 900 ₽</span><a href="course.html" class="btn btn-outline">Подробнее</a></div>
+        </div>
+        <div class="course-card" data-category="code" id="course-2">
+          <div class="course-cover" style="background:#BFDBFE">💻</div>
+          <span class="tag">Программирование</span>
+          <h3>Python с нуля</h3>
+          <p>Переменные, циклы, функции и первый бот в Telegram.</p>
+          <div class="course-footer"><span class="price">14 900 ₽</span><a href="course.html" class="btn btn-outline">Подробнее</a></div>
+        </div>
+        <div class="course-card" data-category="marketing" id="course-3">
+          <div class="course-cover" style="background:#BBF7D0">📈</div>
+          <span class="tag">Маркетинг</span>
+          <h3>Интернет-маркетинг</h3>
+          <p>Таргет, контент и аналитика: как привлекать клиентов.</p>
+          <div class="course-footer"><span class="price">11 900 ₽</span><a href="course.html" class="btn btn-outline">Подробнее</a></div>
+        </div>
+        <div class="course-card" data-category="code" id="course-4">
+          <div class="course-cover" style="background:#C7D2FE">🌐</div>
+          <span class="tag">Программирование</span>
+          <h3>HTML и CSS</h3>
+          <p>Сверстаете адаптивный лендинг и опубликуете его.</p>
+          <div class="course-footer"><span class="price">9 900 ₽</span><a href="course.html" class="btn btn-outline">Подробнее</a></div>
+        </div>
+        <div class="course-card" data-category="design" id="course-5">
+          <div class="course-cover" style="background:#FBCFE8">📷</div>
+          <span class="tag">Дизайн</span>
+          <h3>Мобильная фотография</h3>
+          <p>Свет, кадр и обработка — снимаем на телефон красиво.</p>
+          <div class="course-footer"><span class="price">6 900 ₽</span><a href="course.html" class="btn btn-outline">Подробнее</a></div>
+        </div>
+        <div class="course-card" data-category="marketing" id="course-6">
+          <div class="course-cover" style="background:#FED7AA">✍️</div>
+          <span class="tag">Маркетинг</span>
+          <h3>Копирайтинг</h3>
+          <p>Тексты для сайтов и соцсетей, которые читают до конца.</p>
+          <div class="course-footer"><span class="price">8 900 ₽</span><a href="course.html" class="btn btn-outline">Подробнее</a></div>
+        </div>
+      </div>
+    </div>
+  </section>
+  <script>
+    document.querySelectorAll('.filter').forEach(function (b) {
+      b.addEventListener('click', function () {
+        document.querySelectorAll('.filter').forEach(function (x) { x.classList.remove('active'); });
+        b.classList.add('active');
+        var f = b.dataset.filter;
+        document.querySelectorAll('.course-card').forEach(function (c) {
+          c.style.display = (f === 'all' || c.dataset.category === f) ? '' : 'none';
+        });
+      });
+    });
+  </script>
+</main>
+<footer class="site-footer">
+  <div class="container footer-inner">
+    <span>© 2026 Школа «Шаг». Тестовый сайт для проверки виджета онбординга.</span>
+    <span id="footer-contacts">hello@shag-school.ru · +7 (900) 000-00-00</span>
+  </div>
+</footer>
+<script>
+  document.getElementById('menu-toggle').addEventListener('click', function () {
+    document.getElementById('main-nav').classList.toggle('open');
+  });
+</script>
+<script src="http://localhost:5173/widget.js" data-editor-origin="http://localhost:5173" defer></script>
+</body>
+</html>
+
