@@ -1,469 +1,309 @@
 (() => {
   const editorOrigin = document.currentScript?.dataset.editorOrigin
+  if (!editorOrigin || window.parent === window || window.__onboardingPrototype === 'v3') return
+  window.__onboardingPrototype = 'v3'
+  const CHANNEL = 'onboarding-prototype/v3'
+  let session = '', validator = false, epoch = 0, mode = null, run = null, inspection = null, hovered = null, raf = 0, preparing = false
+  let host, shadow, ring, card, blocker, heading, copy, progress, back, next, skip, previousFocus
 
-  if (
-    !editorOrigin ||
-    window.parent === window ||
-    window.__onboardingPrototype
-  ) return
+  const post = (type, payload = {}, id) => session && window.parent.postMessage({ channel: CHANNEL, session, type, id, payload }, editorOrigin)
+  const reply = (request, payload) => post('response', payload, request.id)
+  const emit = (name, payload = {}) => post('event', { name, ...payload })
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-  window.__onboardingPrototype = true
-
-  const CHANNEL = 'onboarding-prototype/v1'
-
-  let session = ''
-  let picking = false
-  let hovered = null
-  let run = null
-  let raf = 0
-  let lastFocus = null
-
-  let host, shadow, ring, card, block
-  let title, text, progress, back, next, skip
-
-  function post(type, payload = {}) {
-    if (!session) return
-
-    window.parent.postMessage({
-      channel: CHANNEL,
-      session,
-      type,
-      ...payload,
-    }, editorOrigin)
+  function assertCurrent(token) {
+    if (token !== epoch) throw Object.assign(new Error('Операция отменена.'), { cancelled: true })
   }
 
-  function event(name, message) {
-    if (!run) return
+  function visible(element) {
+    if (!element?.isConnected || !element.getClientRects().length) return false
+    const rect = element.getBoundingClientRect(), css = getComputedStyle(element)
+    return rect.width > 0 && rect.height > 0 && css.display !== 'none' && !['hidden', 'collapse'].includes(css.visibility) && css.opacity !== '0'
+  }
 
-    post('event', {
-      name,
-      runId: run.id,
-      stepId: run.steps[run.index].id,
-      index: run.index,
-      message,
-    })
+  function find(selector) {
+    if (!selector) return { state: 'unconfigured', message: 'Выберите целевой элемент.' }
+    let nodes
+    try { nodes = [...document.querySelectorAll(selector)] }
+    catch { return { state: 'invalid', message: 'Выберите элемент заново.' } }
+    const available = nodes.filter(visible)
+    if (available.length > 1) return { state: 'ambiguous', message: 'Найдено несколько элементов. Уточните цель.' }
+    if (available.length === 1) return { state: 'ready', element: available[0] }
+    return nodes.length
+      ? { state: 'hidden', message: 'Элемент есть на странице, но скрыт.' }
+      : { state: 'missing', message: 'На этой странице нет выбранного элемента.' }
+  }
+
+  function validConfig(config) {
+    return config && typeof config.selector === 'string' && config.selector.length <= 2000 &&
+      Array.isArray(config.actions) && config.actions.length <= 20 && config.actions.every(action =>
+        action && ['click', 'select'].includes(action.kind) && typeof action.selector === 'string' &&
+        action.selector.length > 0 && action.selector.length <= 2000 &&
+        (action.kind !== 'select' || (typeof action.value === 'string' && action.value.length <= 500)))
+  }
+
+  function actionControl(element) {
+    return element?.closest?.('button, summary, [role="button"], [role="tab"], a[href^="#"]') || null
+  }
+
+  function safeControl(element) {
+    if (!element || !visible(element) || element.disabled || element.getAttribute('aria-disabled') === 'true') return false
+    if (element.tagName === 'BUTTON' && element.form && element.type !== 'button') return false
+    if (element.tagName === 'A') {
+      const href = element.getAttribute('href') || ''
+      if (!href.startsWith('#')) return false
+    }
+    return element.matches('button, summary, [role="button"], [role="tab"], a[href^="#"]')
+  }
+
+  async function waitFor(selector, token, timeout = 1500) {
+    const deadline = Date.now() + timeout
+    let result
+    do {
+      assertCurrent(token)
+      result = find(selector)
+      if (result.state === 'ready' || ['invalid', 'ambiguous', 'unconfigured'].includes(result.state)) return result
+      await sleep(40)
+    } while (Date.now() < deadline)
+    return result
+  }
+
+  async function prepare(config, token) {
+    assertCurrent(token)
+    let target = find(config.selector)
+    if (target.state === 'ready' || !config.actions.length || ['invalid', 'ambiguous', 'unconfigured'].includes(target.state)) return target
+    for (const action of config.actions) {
+      assertCurrent(token)
+      target = find(config.selector)
+      if (target.state === 'ready') return target
+      const found = await waitFor(action.selector, token)
+      if (found.state !== 'ready') return { state: 'action-missing', message: 'Действие подготовки недоступно. Запишите последовательность заново.' }
+      const control = found.element
+      assertCurrent(token)
+      if (action.kind === 'select') {
+        if (control.tagName !== 'SELECT' || control.disabled || ![...control.options].some(option => option.value === action.value && !option.disabled)) {
+          return { state: 'action-missing', message: 'Выбранный вариант списка недоступен.' }
+        }
+        control.value = action.value
+        control.dispatchEvent(new Event('input', { bubbles: true }))
+        control.dispatchEvent(new Event('change', { bubbles: true }))
+      } else {
+        if (!safeControl(control)) return { state: 'action-invalid', message: 'Выберите действие, открывающее нужный раздел.' }
+        const alreadyOpen = control.getAttribute('aria-expanded') === 'true' || control.getAttribute('aria-selected') === 'true' ||
+          (control.tagName === 'SUMMARY' && control.parentElement?.open)
+        if (!alreadyOpen) control.click()
+      }
+      await sleep(80)
+    }
+    return waitFor(config.selector, token)
+  }
+
+  function selectorFor(element) {
+    for (const attribute of ['data-onboarding', 'id']) {
+      const value = element.getAttribute(attribute)
+      if (!value) continue
+      const candidate = '[' + attribute + '="' + CSS.escape(value) + '"]'
+      if (document.querySelectorAll(candidate).length === 1) return candidate
+    }
+    if (element === document.documentElement) return 'html'
+    const path = []
+    for (let node = element; node && node !== document.documentElement; node = node.parentElement) {
+      const siblings = [...(node.parentElement?.children || [])].filter(other => other.localName === node.localName)
+      path.unshift(CSS.escape(node.localName) + ':nth-of-type(' + (siblings.indexOf(node) + 1) + ')')
+    }
+    return 'html > ' + path.join(' > ')
+  }
+
+  function readable(element) {
+    return (element.getAttribute('aria-label') || element.labels?.[0]?.textContent || element.textContent || element.localName).trim().replace(/\s+/g, ' ').slice(0, 80)
+  }
+
+  function pickElement(element) {
+    return element.closest('button, a, input, select, textarea, [data-onboarding], [role="button"], [role="tab"], summary') || element
   }
 
   function ui() {
-    if (host) return
-
+    if (host || validator) return
     host = document.createElement('div')
+    host.id = 'onboarding-widget-v3'
     shadow = host.attachShadow({ mode: 'open' })
-
-    shadow.innerHTML = [
-      '<style>',
-      ':host{all:initial;position:fixed;inset:0;z-index:2147483647;pointer-events:none;color-scheme:light}',
-      '[hidden]{display:none!important}*{box-sizing:border-box}',
-      '#block{position:fixed;inset:0;pointer-events:auto}',
-      '#ring{position:fixed;border-radius:7px;outline:3px solid #4f46e5;box-shadow:0 0 0 9999px #0f172a66;pointer-events:none}',
-      '#card{position:fixed;width:320px;max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);overflow:auto;background:#fff;color:#20243a;padding:18px;border-radius:12px;box-shadow:0 12px 40px #0003;font:15px/1.5 system-ui,sans-serif;pointer-events:auto}',
-      'h2{font-size:18px;margin:8px 0}p{white-space:pre-wrap;margin:8px 0 16px}small{color:#626b80}',
-      'nav{display:flex;gap:8px;flex-wrap:wrap}button{font:inherit;border:1px solid #d4d9e7;border-radius:7px;padding:7px 10px;background:white;color:#20243a;cursor:pointer}button:focus-visible{outline:3px solid #818cf8;outline-offset:2px}',
-      '</style>',
-      '<div id="block" hidden></div><div id="ring" hidden></div>',
-      '<section id="card" role="dialog" aria-modal="true" aria-labelledby="ob-title" aria-describedby="ob-text" hidden>',
-      '<small id="progress"></small><h2 id="ob-title"></h2><p id="ob-text"></p>',
-      '<nav aria-label="Управление туром"><button id="back">Назад</button><button id="next">Далее</button><button id="skip">Пропустить</button></nav></section>',
-    ].join('')
-
+    shadow.innerHTML = `<style>
+      :host{all:initial;position:fixed;inset:0;z-index:2147483647;pointer-events:none;color-scheme:light}
+      *{box-sizing:border-box}[hidden]{display:none!important}
+      #blocker{position:fixed;inset:0;pointer-events:auto}
+      #ring{position:fixed;outline:3px solid #4f46e5;border-radius:7px;pointer-events:none}
+      #card{position:fixed;width:320px;max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);overflow:auto;padding:18px;background:#fff;color:#20243a;border-radius:12px;box-shadow:0 12px 40px #0003;font:15px/1.5 system-ui;pointer-events:auto}
+      h2{font-size:18px;margin:8px 0}p{white-space:pre-wrap;margin:8px 0 16px}small{color:#626b80}
+      nav{display:flex;gap:8px;flex-wrap:wrap}button{font:inherit;border:1px solid #d4d9e7;border-radius:7px;padding:7px 10px;background:#fff;color:#20243a;cursor:pointer}button:focus-visible{outline:3px solid #818cf8}
+    </style><div id="blocker" hidden></div><div id="ring" hidden></div>
+    <section id="card" role="dialog" aria-modal="true" aria-labelledby="title" aria-describedby="copy" hidden>
+      <small id="progress"></small><h2 id="title"></h2><p id="copy"></p>
+      <nav aria-label="Управление туром"><button id="back">Назад</button><button id="next">Далее</button><button id="skip">Пропустить</button></nav>
+    </section>`
     const get = id => shadow.getElementById(id)
-
-    ring = get('ring')
-    card = get('card')
-    block = get('block')
-    title = get('ob-title')
-    text = get('ob-text')
-    progress = get('progress')
-    back = get('back')
-    next = get('next')
-    skip = get('skip')
-
-    back.onclick = () => {
-      if (run && run.index > 0) {
-        run.index--
-        show()
-      }
-    }
-
+    ring = get('ring'); card = get('card'); blocker = get('blocker'); heading = get('title'); copy = get('copy'); progress = get('progress')
+    back = get('back'); next = get('next'); skip = get('skip')
+    back.onclick = () => { if (run && !preparing && run.index > 0) { run.index--; showStep() } }
     next.onclick = () => {
-      if (!run) return
-
+      if (!run || preparing) return
       const step = run.steps[run.index]
-
-      if (!run.completed.has(step.id)) {
-        run.completed.add(step.id)
-        event('step_completed')
-      }
-
-      if (run.index === run.steps.length - 1) {
-        finish('tour_completed')
-      } else {
-        run.index++
-        show()
-      }
+      if (!run.completed.has(step.id)) { run.completed.add(step.id); analytics('step_completed') }
+      if (run.index === run.steps.length - 1) finish('tour_completed')
+      else { run.index++; showStep() }
     }
-
     skip.onclick = () => finish('tour_skipped')
     document.documentElement.append(host)
   }
 
-  function clear() {
-    cancelAnimationFrame(raf)
-    raf = 0
-    picking = false
-    hovered = null
+  function analytics(name, message) {
+    if (run) emit(name, { runId: run.id, stepId: run.steps[run.index].id, index: run.index, message, eventId: crypto.randomUUID() })
+  }
 
-    if (host) {
-      ring.hidden = card.hidden = block.hidden = true
-    }
+  function cancel() {
+    if (run) analytics('tour_stopped')
+    epoch++; run = inspection = mode = hovered = null; preparing = false
+    cancelAnimationFrame(raf); raf = 0
+    if (host) ring.hidden = card.hidden = blocker.hidden = true
   }
 
   function finish(name, message) {
-    if (!run) return
-
-    event(name, message)
+    analytics(name, message)
     run = null
-    clear()
-
-    if (lastFocus?.isConnected) {
-      lastFocus.focus({ preventScroll: true })
-    }
+    cancel()
+    if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true })
   }
 
-  function selector(element) {
-    if (element === document.documentElement) return 'html'
-
-    for (const attr of ['data-onboarding', 'id']) {
-      const value = element.getAttribute(attr)
-      if (!value) continue
-
-      const candidate =
-        '[' + attr + '="' + CSS.escape(value) + '"]'
-
-      if (document.querySelectorAll(candidate).length === 1) {
-        return candidate
-      }
-    }
-
-    const parts = []
-    let node = element
-
-    while (node && node !== document.documentElement) {
-      const siblings = [
-        ...(node.parentElement?.children || []),
-      ].filter(item => item.localName === node.localName)
-
-      parts.unshift(
-        CSS.escape(node.localName) +
-        ':nth-of-type(' +
-        (siblings.indexOf(node) + 1) +
-        ')',
-      )
-
-      node = node.parentElement
-    }
-
-    return 'html > ' + parts.join(' > ')
-  }
-
-  function visible(element) {
-    if (!element?.isConnected) return false
-
+  function draw(element, dimmed = false) {
+    ui()
+    if (!host) return
     const rect = element.getBoundingClientRect()
-    const style = getComputedStyle(element)
-
-    return rect.width > 0 &&
-      rect.height > 0 &&
-      style.visibility !== 'hidden' &&
-      style.display !== 'none'
-  }
-
-  function layout(element) {
-    const rect = element.getBoundingClientRect()
-
     ring.hidden = false
-
-    Object.assign(ring.style, {
-      left: (rect.left - 4) + 'px',
-      top: (rect.top - 4) + 'px',
-      width: (rect.width + 8) + 'px',
-      height: (rect.height + 8) + 'px',
-    })
-
-    if (!run) return
-
-    const width = card.offsetWidth
-    const height = card.offsetHeight
-    const left = Math.max(
-      12,
-      Math.min(rect.left, innerWidth - width - 12),
-    )
-
-    let top = rect.bottom + 12
-
-    if (top + height > innerHeight - 12) {
-      top = rect.top - height - 12
+    Object.assign(ring.style, { left: (rect.left - 3) + 'px', top: (rect.top - 3) + 'px', width: (rect.width + 6) + 'px', height: (rect.height + 6) + 'px', boxShadow: dimmed ? '0 0 0 9999px #0f172a66' : '0 0 0 4px #4f46e522' })
+    if (dimmed) {
+      const width = card.offsetWidth, height = card.offsetHeight
+      const left = Math.max(12, Math.min(rect.left, innerWidth - width - 12))
+      let top = rect.bottom + 12
+      if (top + height > innerHeight - 12) top = rect.top - height - 12
+      top = Math.max(12, Math.min(top, innerHeight - height - 12))
+      Object.assign(card.style, { left: left + 'px', top: top + 'px' })
     }
-
-    top = Math.max(
-      12,
-      Math.min(top, innerHeight - height - 12),
-    )
-
-    Object.assign(card.style, {
-      left: left + 'px',
-      top: top + 'px',
-    })
   }
 
   function tick() {
     raf = 0
-
-    if (run) {
-      if (!visible(run.target)) {
-        finish(
-          'tour_error',
-          'Элемент исчез или скрыт. Выбери другую цель.',
-        )
-        return
-      }
-
-      layout(run.target)
-    } else if (picking && visible(hovered)) {
-      layout(hovered)
-    } else if (ring) {
-      ring.hidden = true
-    }
-
-    if (run || picking) {
-      raf = requestAnimationFrame(tick)
-    }
+    if (preparing) return
+    const target = run?.target || inspection?.target || (mode?.kind === 'pick' ? hovered : null)
+    if (target && visible(target)) draw(target, !!run)
+    else if (host) ring.hidden = true
+    if (run || inspection || mode?.kind === 'pick') raf = requestAnimationFrame(tick)
   }
+  const animate = () => { if (!raf && !validator) raf = requestAnimationFrame(tick) }
 
-  function animate() {
-    if (!raf) raf = requestAnimationFrame(tick)
-  }
-
-  function show() {
+  async function showStep() {
     if (!run) return
-
-    const step = run.steps[run.index]
-    let matches
-
+    const current = run, token = ++epoch, step = current.steps[current.index]
+    preparing = true; ring.hidden = card.hidden = true; blocker.hidden = false
     try {
-      matches = document.querySelectorAll(step.selector)
-    } catch {
-      finish('tour_error', 'Некорректный селектор элемента.')
-      return
-    }
-
-    if (matches.length !== 1 || !visible(matches[0])) {
-      finish(
-        'tour_error',
-        'Цель шага ' + (run.index + 1) +
-        ' отсутствует, скрыта или не уникальна.',
-      )
-      return
-    }
-
-    run.target = matches[0]
-
-    run.target.scrollIntoView({
-      block: 'center',
-      inline: 'nearest',
-      behavior: 'instant',
-    })
-
-    title.textContent = step.title || 'Подсказка'
-    text.textContent = step.text
-    progress.textContent =
-      'Шаг ' + (run.index + 1) + ' из ' + run.steps.length
-
-    back.hidden = run.index === 0
-    next.textContent =
-      run.index === run.steps.length - 1
-        ? 'Завершить'
-        : 'Далее'
-
-    card.hidden = block.hidden = false
-    layout(run.target)
-    next.focus({ preventScroll: true })
-    event('step_shown')
-    animate()
+      const result = await prepare(step.config, token)
+      assertCurrent(token)
+      if (result.state !== 'ready') { finish('tour_error', result.message); return }
+      current.target = result.element
+      result.element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' })
+      heading.textContent = step.title || 'Подсказка'; copy.textContent = step.text
+      progress.textContent = 'Шаг ' + (current.index + 1) + ' из ' + current.steps.length
+      back.hidden = current.index === 0; next.textContent = current.index === current.steps.length - 1 ? 'Завершить' : 'Далее'
+      card.hidden = false; preparing = false; draw(result.element, true); next.focus({ preventScroll: true })
+      analytics('step_shown'); animate()
+    } catch (error) { if (!error.cancelled && run === current) finish('tour_error', 'Не удалось подготовить шаг.') }
   }
 
-  function validSteps(steps) {
-    return Array.isArray(steps) &&
-      steps.length > 0 &&
-      steps.length <= 50 &&
-      steps.every(step =>
-        step &&
-        typeof step.id === 'string' &&
-        step.id.length > 0 &&
-        typeof step.selector === 'string' &&
-        step.selector.length > 0 &&
-        step.selector.length <= 2000 &&
-        typeof step.title === 'string' &&
-        step.title.length <= 120 &&
-        typeof step.text === 'string' &&
-        step.text.length <= 2000,
-      ) &&
-      new Set(steps.map(step => step.id)).size === steps.length
+  function recordAction(action) {
+    if (mode?.kind !== 'record') return
+    if (mode.actions.length >= 20) { emit('record-note', { taskId: mode.taskId, message: 'Уже записано 20 действий. Выберите конечную цель.' }); return }
+    const last = mode.actions.at(-1)
+    if (action.kind === 'select' && last?.kind === 'select' && last.selector === action.selector) mode.actions[mode.actions.length - 1] = action
+    else mode.actions.push(action)
+    emit('action-recorded', { taskId: mode.taskId, actions: mode.actions })
   }
 
-  window.addEventListener('message', message => {
-    if (
-      message.origin !== editorOrigin ||
-      message.source !== window.parent
-    ) return
-
-    const data = message.data
-
-    if (
-      !data ||
-      data.channel !== CHANNEL ||
-      typeof data.session !== 'string' ||
-      data.session.length < 10 ||
-      data.session.length > 100
-    ) return
-
-    if (data.type === 'hello') {
-      if (run) finish('tour_stopped')
-
-      clear()
-      session = data.session
-      ui()
-      post('ready')
-      return
-    }
-
+  window.addEventListener('message', async event => {
+    if (event.source !== window.parent || event.origin !== editorOrigin) return
+    const data = event.data
+    if (!data || data.channel !== CHANNEL || typeof data.session !== 'string' || data.session.length < 10 || data.session.length > 100 || typeof data.id !== 'string' || data.id.length > 100) return
+    const payload = data.payload || {}
+    if (data.type === 'hello') { cancel(); session = data.session; validator = payload.validator === true; post('ready', { url: location.href, title: document.title }); return }
     if (!session || data.session !== session) return
-
-    if (data.type === 'pick') {
-      if (run) finish('tour_stopped')
-
-      clear()
-      picking = true
-      animate()
-    } else if (data.type === 'cancel-pick') {
-      if (!picking) return
-
-      clear()
-      post('pick-cancelled')
-    } else if (data.type === 'stop') {
-      if (run) finish('tour_stopped')
-      else clear()
-    } else if (data.type === 'preview') {
-      if (
-        !validSteps(data.steps) ||
-        typeof data.color !== 'string' ||
-        !/^#[0-9a-f]{6}$/i.test(data.color)
-      ) {
-        post('error', {
-          message: 'Некорректные данные тура.',
-        })
-        return
-      }
-
-      if (run) finish('tour_stopped')
-
-      clear()
-      lastFocus = document.activeElement
-
-      run = {
-        id: crypto.randomUUID(),
-        steps: data.steps,
-        index: 0,
-        completed: new Set(),
-        target: null,
-      }
-
-      next.style.background = data.color
-
-      const rgb = [1, 3, 5].map(index =>
-        parseInt(data.color.slice(index, index + 2), 16),
-      )
-
-      const brightness =
-        (rgb[0] * 299 + rgb[1] * 587 + rgb[2] * 114) / 1000
-
-      next.style.color =
-        brightness > 145 ? '#111827' : '#ffffff'
-
-      event('tour_started')
-      show()
+    try {
+      if (data.type === 'probe' || data.type === 'highlight') {
+        if (!validConfig(payload.config)) { reply(data, { state: 'invalid', message: 'Выберите элемент заново.' }); return }
+        if (data.type === 'highlight') { if (validator) return; cancel(); ui(); preparing = true }
+        const token = ++epoch, result = await prepare(payload.config, token)
+        assertCurrent(token)
+        if (data.type === 'highlight') {
+          preparing = false
+          if (result.state === 'ready') { inspection = { target: result.element }; result.element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }); draw(result.element); animate() }
+        }
+        reply(data, { state: result.state, message: result.message || '', label: result.element ? readable(result.element) : '' })
+      } else if (data.type === 'pick-start') {
+        if (validator || typeof payload.taskId !== 'string') return
+        cancel(); ui(); mode = { kind: 'pick', taskId: payload.taskId }; animate(); reply(data, { ok: true })
+      } else if (data.type === 'record-start') {
+        if (validator || typeof payload.taskId !== 'string') return
+        cancel(); mode = { kind: 'record', taskId: payload.taskId, actions: [] }; reply(data, { ok: true })
+      } else if (data.type === 'record-stop') {
+        const actions = mode?.kind === 'record' && mode.taskId === payload.taskId ? mode.actions : []
+        mode = null; reply(data, { actions })
+      } else if (data.type === 'cancel') { cancel(); reply(data, { ok: true })
+      } else if (data.type === 'preview') {
+        if (validator || !Array.isArray(payload.steps) || !payload.steps.length || payload.steps.length > 50 || !payload.steps.every(step => step && typeof step.id === 'string' && typeof step.title === 'string' && typeof step.text === 'string' && validConfig(step.config))) return
+        cancel(); ui(); previousFocus = document.activeElement
+        run = { id: crypto.randomUUID(), steps: payload.steps, index: 0, target: null, completed: new Set() }
+        const color = /^#[0-9a-f]{6}$/i.test(payload.color) ? payload.color : '#4f46e5'
+        next.style.background = color
+        const rgb = [1, 3, 5].map(index => parseInt(color.slice(index, index + 2), 16))
+        next.style.color = (rgb[0] * 299 + rgb[1] * 587 + rgb[2] * 114) / 1000 > 145 ? '#111827' : '#fff'
+        analytics('tour_started'); reply(data, { ok: true }); showStep()
+      } else reply(data, { ok: false })
+    } catch (error) {
+      if (error.cancelled) reply(data, { state: 'cancelled' })
+      else { preparing = false; reply(data, { state: 'error', message: 'Не удалось выполнить действие. Повторите настройку.' }) }
     }
   })
 
   document.addEventListener('pointermove', event => {
-    if (
-      !picking ||
-      event.composedPath().includes(host)
-    ) return
-
-    hovered =
-      event.target instanceof Element ? event.target : null
+    if (mode?.kind !== 'pick' || event.composedPath().includes(host) || !(event.target instanceof Element)) return
+    hovered = pickElement(event.target)
   }, true)
-
   document.addEventListener('pointerdown', event => {
-    if (
-      !picking ||
-      event.composedPath().includes(host)
-    ) return
-
-    event.preventDefault()
-    event.stopImmediatePropagation()
+    if (mode?.kind !== 'pick' || event.composedPath().includes(host)) return
+    event.preventDefault(); event.stopImmediatePropagation()
   }, true)
-
   document.addEventListener('click', event => {
-    if (
-      !picking ||
-      event.composedPath().includes(host) ||
-      !(event.target instanceof Element)
-    ) return
-
-    event.preventDefault()
-    event.stopImmediatePropagation()
-
-    const result = selector(event.target)
-    clear()
-
-    if (result.length > 2000) {
-      post('error', {
-        message: 'Слишком сложная цель. Выбери другой элемент.',
-      })
-    } else {
-      post('selected', { selector: result })
+    if (!mode || event.composedPath().includes(host) || !(event.target instanceof Element)) return
+    if (mode.kind === 'pick') {
+      event.preventDefault(); event.stopImmediatePropagation()
+      const element = pickElement(event.target), selector = selectorFor(element), taskId = mode.taskId
+      cancel()
+      if (selector.length > 2000) { emit('pick-error', { taskId, message: 'Выберите более простой элемент.' }); return }
+      emit('picked', { taskId, selector, label: readable(element), pageUrl: location.href })
+    } else if (mode.kind === 'record' && event.isTrusted) {
+      const control = actionControl(event.target)
+      if (!control) return
+      if (!safeControl(control)) { event.preventDefault(); emit('record-note', { taskId: mode.taskId, message: 'Выберите действие, открывающее нужный раздел.' }); return }
+      recordAction({ kind: 'click', selector: selectorFor(control), label: readable(control) })
     }
   }, true)
-
+  document.addEventListener('change', event => {
+    if (mode?.kind === 'record' && event.target instanceof HTMLSelectElement && !event.target.disabled) {
+      recordAction({ kind: 'select', selector: selectorFor(event.target), value: event.target.value, label: readable(event.target) })
+    }
+  }, true)
   document.addEventListener('keydown', event => {
-    if (picking && event.key === 'Escape') {
-      event.preventDefault()
-      event.stopImmediatePropagation()
-      clear()
-      post('pick-cancelled')
-    } else if (run && event.key === 'Escape') {
-      event.preventDefault()
-      event.stopImmediatePropagation()
-      finish('tour_skipped')
-    } else if (run && event.key === 'Tab') {
-      const buttons = [back, next, skip].filter(
-        button => !button.hidden,
-      )
-
-      const first = buttons[0]
-      const last = buttons[buttons.length - 1]
-      const active = shadow.activeElement
-
-      if (
-        !buttons.includes(active) ||
-        (!event.shiftKey && active === last) ||
-        (event.shiftKey && active === first)
-      ) {
-        event.preventDefault()
-        ;(event.shiftKey ? last : first).focus()
-      }
+    if (event.key === 'Escape' && mode) { const taskId = mode.taskId; event.preventDefault(); cancel(); emit('pick-cancelled', { taskId }) }
+    else if (event.key === 'Escape' && run) { event.preventDefault(); finish('tour_skipped') }
+    else if (event.key === 'Tab' && run && host) {
+      const buttons = [back, next, skip].filter(button => !button.hidden), first = buttons[0], last = buttons.at(-1), active = shadow.activeElement
+      if (!buttons.includes(active) || (!event.shiftKey && active === last) || (event.shiftKey && active === first)) { event.preventDefault(); (event.shiftKey ? last : first).focus() }
     }
   }, true)
 })()
