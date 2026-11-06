@@ -6,7 +6,7 @@ Workflow `.github/workflows/pages.yml` собирает Vue-конструкто
 ## Настройка и запуск
 
 В Settings → Pages выберите Source → GitHub Actions.
-Публикация запускается при push в `main` или `fix/responsive-editor-flow`.
+Публикация запускается при push в `main`.
 Для ручного запуска откройте Actions → Deploy demo → Run workflow
 и выберите нужную ветку.
 
@@ -34,5 +34,7 @@ VITE_DEMO_SITE_URL=https://luquii2.github.io/onboarding-platform/demo/ node tool
 Откройте конструктор и проверьте статус «Сайт подключен», выбор цели шага,
 настройку мобильной версии и прохождение тура на разных страницах.
 
-Туры сохраняются в localStorage текущего браузера.
-У других посетителей собственный черновик; общая серверная синхронизация пока отсутствует.
+Сценарии конструктора сохраняются в localStorage текущего браузера.
+На отдельном демосайте работают примеры из `demo-source/onboarding.json`.
+Для собственных сценариев скачайте JSON в разделе «Подключение сайта и экспорт».
+Подробности подключения описаны в [docs/integration.md](docs/integration.md).
