@@ -29,7 +29,7 @@ export function injectWidget(html, config) {
     } catch { return value }
   })
   if (!/<\/body\s*>/i.test(cleaned)) throw new Error('В странице не найдена закрывающая часть body.')
-  const script = '\n<!-- onboarding-hosted-widget -->\n<script src="' + config.widgetUrl + '" data-editor-origin="' + config.editorOrigin + '" defer></script>\n'
+  const script = '\n<!-- onboarding-hosted-widget -->\n<script src="' + config.widgetUrl + '" data-editor-origin="' + config.editorOrigin + '" data-site-id="demo-school" data-config-url="' + new URL('onboarding.json', config.demoUrl).href + '" defer></script>\n'
   return cleaned.replace(/<\/body\s*>/i, script + '</body>')
 }
 
@@ -42,6 +42,7 @@ export async function buildHostedDemo(root, value) {
     await writeFile(join(output, name), injectWidget(html, config))
   }
   await copyFile(join(source, 'style.css'), join(output, 'style.css'))
+  await copyFile(join(source, 'onboarding.json'), join(output, 'onboarding.json'))
   console.log('Демосайт добавлен в dist/demo. Origin редактора: ' + config.editorOrigin)
 }
 
