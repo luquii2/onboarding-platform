@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Python с нуля — Школа «Шаг»</title>
+  <link rel="stylesheet" href="style.css">
+  <!-- Сюда будет вставлен скрипт виджета онбординга:
+  <script src="https://<наш-сервер>/widget.js" data-site-key="..."></script> -->
+</head>
+<body>
+<header class="site-header">
+  <div class="container header-inner">
+    <a href="index.html" class="logo" id="logo">Школа <span>«Шаг»</span></a>
+    <nav class="main-nav" id="main-nav">
+      <a href="index.html" id="nav-index">Главная</a>
+      <a href="courses.html" id="nav-courses">Курсы</a>
+      <a href="course.html" id="nav-course" class="active">О курсе</a>
+      <a href="signup.html" id="nav-signup">Запись</a>
+    </nav>
+    <a href="signup.html" class="btn header-cta" id="header-signup">Записаться</a>
+    <button class="menu-toggle" id="menu-toggle" aria-label="Меню">☰</button>
+  </div>
+</header>
+<main>
+  <div class="container course-hero">
+    <div>
+      <span class="tag">Программирование</span>
+      <h1 id="course-title">Python с нуля</h1>
+      <div class="meta" id="course-meta"><span>⏱ 8 недель</span><span>📚 24 урока</span><span>👩‍🏫 Наставник</span></div>
+      <p>Курс для тех, кто никогда не программировал. Начнём с установки Python и закончим своим Telegram-ботом.</p>
+      <h2 style="margin:28px 0 8px">Программа</h2>
+      <ul class="program" id="course-program">
+        <li><b>01</b>Установка Python и первая программа</li>
+        <li><b>02</b>Переменные, типы данных и ввод</li>
+        <li><b>03</b>Условия и циклы</li>
+        <li><b>04</b>Функции и модули</li>
+        <li><b>05</b>Списки, словари и работа с файлами</li>
+        <li><b>06</b>Итоговый проект: Telegram-бот</li>
+      </ul>
+    </div>
+    <aside>
+      <div class="panel side-card" id="price-card">
+        <span class="tag">Стоимость</span>
+        <div class="price">14 900 ₽</div>
+        <a href="signup.html" class="btn" id="course-signup">Записаться на курс</a>
+        <ul><li>Рассрочка без процентов</li><li>Первый урок бесплатно</li><li>Возврат в течение 14 дней</li></ul>
+      </div>
+    </aside>
+  </div>
+</main>
+<footer class="site-footer">
+  <div class="container footer-inner">
+    <span>© 2026 Школа «Шаг». Тестовый сайт для проверки виджета онбординга.</span>
+    <span id="footer-contacts">hello@shag-school.ru · +7 (900) 000-00-00</span>
+  </div>
+</footer>
+<script>
+  document.getElementById('menu-toggle').addEventListener('click', function () {
+    document.getElementById('main-nav').classList.toggle('open');
+  });
+</script>
+<script src="http://localhost:5173/widget.js" data-editor-origin="http://localhost:5173" defer></script>
+</body>
+</html>
+

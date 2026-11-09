@@ -6,3 +6,6 @@ dist/
 .DS_Store
 *.local
 .onboarding-backups/
+README-PAGES.md
+docs/
+tests/

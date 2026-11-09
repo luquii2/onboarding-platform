@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Запись — Школа «Шаг»</title>
+  <link rel="stylesheet" href="style.css">
+  <!-- Сюда будет вставлен скрипт виджета онбординга:
+  <script src="https://<наш-сервер>/widget.js" data-site-key="..."></script> -->
+</head>
+<body>
+<header class="site-header">
+  <div class="container header-inner">
+    <a href="index.html" class="logo" id="logo">Школа <span>«Шаг»</span></a>
+    <nav class="main-nav" id="main-nav">
+      <a href="index.html" id="nav-index">Главная</a>
+      <a href="courses.html" id="nav-courses">Курсы</a>
+      <a href="course.html" id="nav-course">О курсе</a>
+      <a href="signup.html" id="nav-signup" class="active">Запись</a>
+    </nav>
+    <a href="signup.html" class="btn header-cta" id="header-signup">Записаться</a>
+    <button class="menu-toggle" id="menu-toggle" aria-label="Меню">☰</button>
+  </div>
+</header>
+<main>
+  <section class="section">
+    <div class="container">
+      <h2 id="signup-title">Запись на курс</h2>
+      <form class="form" id="signup-form">
+        <label>Имя<input type="text" id="input-name" placeholder="Как к вам обращаться" required></label>
+        <label>Email<input type="email" id="input-email" placeholder="name@mail.ru" required></label>
+        <label>Телефон<input type="tel" id="input-phone" placeholder="+7 (___) ___-__-__"></label>
+        <label>Курс
+          <select id="input-course">
+            <option>Основы веб-дизайна</option>
+            <option>Python с нуля</option>
+            <option>Интернет-маркетинг</option>
+            <option>HTML и CSS</option>
+            <option>Мобильная фотография</option>
+            <option>Копирайтинг</option>
+          </select>
+        </label>
+        <label>Комментарий<textarea id="input-comment" rows="3" placeholder="Что хотите узнать?"></textarea></label>
+        <label class="check"><input type="checkbox" id="input-agree" required> Согласен на обработку данных</label>
+        <button type="submit" class="btn" id="submit-btn">Отправить заявку</button>
+        <div class="success" id="success-msg">Спасибо! Мы свяжемся с вами в течение дня.</div>
+      </form>
+    </div>
+  </section>
+  <script>
+    document.getElementById('signup-form').addEventListener('submit', function (e) {
+      e.preventDefault();
+      document.getElementById('success-msg').style.display = 'block';
+      this.reset();
+    });
+  </script>
+</main>
+<footer class="site-footer">
+  <div class="container footer-inner">
+    <span>© 2026 Школа «Шаг». Тестовый сайт для проверки виджета онбординга.</span>
+    <span id="footer-contacts">hello@shag-school.ru · +7 (900) 000-00-00</span>
+  </div>
+</footer>
+<script>
+  document.getElementById('menu-toggle').addEventListener('click', function () {
+    document.getElementById('main-nav').classList.toggle('open');
+  });
+</script>
+<script src="http://localhost:5173/widget.js" data-editor-origin="http://localhost:5173" defer></script>
+</body>
+</html>
+
