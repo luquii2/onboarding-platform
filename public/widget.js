@@ -1,14 +1,21 @@
 (() => {
-  const editorOrigin = document.currentScript?.dataset.editorOrigin
-  if (!editorOrigin || window.parent === window || window.__onboardingPrototype === 'v3') return
+  const settings = { ...document.currentScript?.dataset }
+  const editorOrigin = settings.editorOrigin
+  const embedded = !!editorOrigin && window.parent !== window
+  if ((!embedded && !settings.configUrl) || window.__onboardingPrototype === 'v3') return
   window.__onboardingPrototype = 'v3'
   const CHANNEL = 'onboarding-prototype/v3'
   let session = '', validator = false, epoch = 0, mode = null, run = null, inspection = null, hovered = null, raf = 0, preparing = false
   let host, shadow, ring, card, blocker, heading, copy, progress, back, next, skip, previousFocus
+  let offer, offerTitle, offerText, offerStart, offerChoices, notice
+  let catalog = [], siteId = '', launchPending = false, dismissed = new Set()
 
-  const post = (type, payload = {}, id) => session && window.parent.postMessage({ channel: CHANNEL, session, type, id, payload }, editorOrigin)
+  const post = (type, payload = {}, id) => embedded && session && window.parent.postMessage({ channel: CHANNEL, session, type, id, payload }, editorOrigin)
   const reply = (request, payload) => post('response', payload, request.id)
-  const emit = (name, payload = {}) => post('event', { name, ...payload })
+  const emit = (name, payload = {}) => {
+    if (embedded) post('event', { name, ...payload })
+    else window.dispatchEvent(new CustomEvent('onboarding:event', { detail: { name, ...payload } }))
+  }
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
   function assertCurrent(token) {
@@ -132,17 +139,32 @@
       *{box-sizing:border-box}[hidden]{display:none!important}
       #blocker{position:fixed;inset:0;pointer-events:auto}
       #ring{position:fixed;outline:3px solid #4f46e5;border-radius:7px;pointer-events:none}
-      #card{position:fixed;width:320px;max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);overflow:auto;padding:18px;background:#fff;color:#20243a;border-radius:12px;box-shadow:0 12px 40px #0003;font:15px/1.5 system-ui;pointer-events:auto}
+      #card,#offer,#notice{position:fixed;width:320px;max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);overflow:auto;padding:18px;background:#fff;color:#20243a;border-radius:12px;box-shadow:0 12px 40px #0003;font:15px/1.5 system-ui;pointer-events:auto}
+      #offer,#notice{right:20px;bottom:20px;border:1px solid #e0e5ef}#offer-close{float:right;padding:0 7px;margin:-5px -5px 4px 10px}#offer-start{width:100%;background:#4f46e5;color:white;border-color:transparent}#offer-choices{width:100%;font:inherit;padding:8px;margin-bottom:12px;border:1px solid #d4d9e7;border-radius:7px}
       h2{font-size:18px;margin:8px 0}p{white-space:pre-wrap;margin:8px 0 16px}small{color:#626b80}
       nav{display:flex;gap:8px;flex-wrap:wrap}button{font:inherit;border:1px solid #d4d9e7;border-radius:7px;padding:7px 10px;background:#fff;color:#20243a;cursor:pointer}button:focus-visible{outline:3px solid #818cf8}
     </style><div id="blocker" hidden></div><div id="ring" hidden></div>
     <section id="card" role="dialog" aria-modal="true" aria-labelledby="title" aria-describedby="copy" hidden>
       <small id="progress"></small><h2 id="title"></h2><p id="copy"></p>
       <nav aria-label="Управление туром"><button id="back">Назад</button><button id="next">Далее</button><button id="skip">Пропустить</button></nav>
-    </section>`
+    </section>
+    <aside id="offer" role="complementary" aria-label="Обучение на сайте" hidden>
+      <button id="offer-close" aria-label="Закрыть приглашение">×</button><small>ОБУЧЕНИЕ НА САЙТЕ</small>
+      <h2 id="offer-title"></h2><p id="offer-text"></p>
+      <select id="offer-choices" aria-label="Выберите обучение" hidden></select><button id="offer-start"></button>
+    </aside>
+    <section id="notice" role="status" hidden><h2>Обучение приостановлено</h2><p id="notice-text"></p><button id="notice-close">Закрыть</button></section>`
     const get = id => shadow.getElementById(id)
     ring = get('ring'); card = get('card'); blocker = get('blocker'); heading = get('title'); copy = get('copy'); progress = get('progress')
     back = get('back'); next = get('next'); skip = get('skip')
+    offer = get('offer'); offerTitle = get('offer-title'); offerText = get('offer-text'); offerStart = get('offer-start'); offerChoices = get('offer-choices'); notice = get('notice')
+    get('offer-close').onclick = () => {
+      for (const scenario of eligibleOffers()) dismissed.add(scenario.id)
+      store('dismissed', [...dismissed]); offer.hidden = true
+    }
+    offerChoices.onchange = updateOffer
+    offerStart.onclick = () => launchScenario(offerChoices.value)
+    get('notice-close').onclick = () => { notice.hidden = true }
     back.onclick = () => { if (run && !preparing && run.index > 0) { run.index--; showStep() } }
     next.onclick = () => {
       if (!run || preparing) return
@@ -156,20 +178,25 @@
   }
 
   function analytics(name, message) {
-    if (run) emit(name, { runId: run.id, stepId: run.steps[run.index].id, index: run.index, message, eventId: crypto.randomUUID() })
+    if (run) emit(name, { ...runState(), message, eventId: crypto.randomUUID() })
   }
 
   function cancel() {
     if (run) analytics('tour_stopped')
+    if (run && !embedded) removeStored('run')
     epoch++; run = inspection = mode = hovered = null; preparing = false
+    launchPending = false
     cancelAnimationFrame(raf); raf = 0
-    if (host) ring.hidden = card.hidden = blocker.hidden = true
+    if (host) ring.hidden = card.hidden = blocker.hidden = offer.hidden = notice.hidden = true
   }
 
   function finish(name, message) {
     analytics(name, message)
+    if (!embedded) removeStored('run')
     run = null
     cancel()
+    if (name === 'tour_error' && !embedded) showNotice(message)
+    else renderOffer()
     if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true })
   }
 
@@ -204,6 +231,16 @@
     const current = run, token = ++epoch, step = current.steps[current.index]
     preparing = true; ring.hidden = card.hidden = true; blocker.hidden = false
     try {
+      analytics('tour_progress')
+      if (!embedded) saveRun()
+      if (step.pageUrl !== pageUrl(location.href)) {
+        analytics('tour_navigate')
+        if (!embedded) {
+          if (!saveRun()) { finish('tour_error', 'Браузер не разрешил сохранить прогресс. Разрешите хранение данных сайта и повторите обучение.'); return }
+          location.assign(step.pageUrl)
+        }
+        return
+      }
       const result = await prepare(step.config, token)
       assertCurrent(token)
       if (result.state !== 'ready') { finish('tour_error', result.message); return }
@@ -227,11 +264,11 @@
   }
 
   window.addEventListener('message', async event => {
-    if (event.source !== window.parent || event.origin !== editorOrigin) return
+    if (!embedded || event.source !== window.parent || event.origin !== editorOrigin) return
     const data = event.data
     if (!data || data.channel !== CHANNEL || typeof data.session !== 'string' || data.session.length < 10 || data.session.length > 100 || typeof data.id !== 'string' || data.id.length > 100) return
     const payload = data.payload || {}
-    if (data.type === 'hello') { cancel(); session = data.session; validator = payload.validator === true; post('ready', { url: location.href, title: document.title }); return }
+    if (data.type === 'hello') { cancel(); session = data.session; validator = payload.validator === true; post('ready', { url: location.href, title: document.title, capabilities: ['multipage-tour', 'scenario-triggers'] }); return }
     if (!session || data.session !== session) return
     try {
       if (data.type === 'probe' || data.type === 'highlight') {
@@ -254,19 +291,18 @@
         const actions = mode?.kind === 'record' && mode.taskId === payload.taskId ? mode.actions : []
         mode = null; reply(data, { actions })
       } else if (data.type === 'cancel') { cancel(); reply(data, { ok: true })
+      } else if (data.type === 'configure') {
+        if (validator) { reply(data, { ok: false }); return }
+        configureCatalog(payload)
+        reply(data, { ok: true })
       } else if (data.type === 'preview') {
-        if (validator || !Array.isArray(payload.steps) || !payload.steps.length || payload.steps.length > 50 || !payload.steps.every(step => step && typeof step.id === 'string' && typeof step.title === 'string' && typeof step.text === 'string' && validConfig(step.config))) return
-        cancel(); ui(); previousFocus = document.activeElement
-        run = { id: crypto.randomUUID(), steps: payload.steps, index: 0, target: null, completed: new Set() }
-        const color = /^#[0-9a-f]{6}$/i.test(payload.color) ? payload.color : '#4f46e5'
-        next.style.background = color
-        const rgb = [1, 3, 5].map(index => parseInt(color.slice(index, index + 2), 16))
-        next.style.color = (rgb[0] * 299 + rgb[1] * 587 + rgb[2] * 114) / 1000 > 145 ? '#111827' : '#fff'
-        analytics('tour_started'); reply(data, { ok: true }); showStep()
+        if (validator) { reply(data, { ok: false }); return }
+        startRun(payload)
+        reply(data, { ok: true })
       } else reply(data, { ok: false })
     } catch (error) {
       if (error.cancelled) reply(data, { state: 'cancelled' })
-      else { preparing = false; reply(data, { state: 'error', message: 'Не удалось выполнить действие. Повторите настройку.' }) }
+      else { preparing = false; reply(data, { state: 'error', message: String(error.message || 'Не удалось выполнить действие. Повторите настройку.').slice(0, 300) }) }
     }
   })
 
@@ -293,6 +329,11 @@
       recordAction({ kind: 'click', selector: selectorFor(control), label: readable(control) })
     }
   }, true)
+  document.addEventListener('click', event => {
+    if (run || mode || validator || launchPending || event.defaultPrevented || event.button > 0 || event.composedPath().includes(host) || !(event.target instanceof Element)) return
+    const scenario = catalog.find(item => item.trigger.type === 'click' && matchesTriggerPage(item) && event.target.closest(item.trigger.selector))
+    if (scenario) { event.preventDefault(); event.stopImmediatePropagation(); launchScenario(scenario.id) }
+  }, true)
   document.addEventListener('change', event => {
     if (mode?.kind === 'record' && event.target instanceof HTMLSelectElement && !event.target.disabled) {
       recordAction({ kind: 'select', selector: selectorFor(event.target), value: event.target.value, label: readable(event.target) })
@@ -306,4 +347,162 @@
       if (!buttons.includes(active) || (!event.shiftKey && active === last) || (event.shiftKey && active === first)) { event.preventDefault(); (event.shiftKey ? last : first).focus() }
     }
   }, true)
+  function pageUrl(value) {
+    const url = new URL(value, location.href)
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.origin !== location.origin) throw new Error('Сценарий содержит страницу другого сайта.')
+    url.hash = ''
+    return url.href
+  }
+
+  function runState() {
+    return {
+      runId: run.id, scenarioId: run.scenarioId, stepId: run.steps[run.index].id,
+      index: run.index, pageUrl: run.steps[run.index].pageUrl,
+      completed: [...run.completed], started: true,
+    }
+  }
+
+  function startRun(payload) {
+    if (!Array.isArray(payload.steps) || !payload.steps.length || payload.steps.length > 50) throw new Error('В сценарии нет готовых шагов.')
+    const ids = new Set()
+    const steps = payload.steps.map(step => {
+      if (!step || typeof step.id !== 'string' || !step.id || step.id.length > 100 || ids.has(step.id) || typeof step.title !== 'string' || typeof step.text !== 'string' || !validConfig(step.config)) throw new Error('Некорректные настройки шага.')
+      ids.add(step.id)
+      return { ...step, title: step.title.slice(0, 120), text: step.text.slice(0, 2000), pageUrl: pageUrl(step.pageUrl || location.href) }
+    })
+    const index = payload.index ?? 0
+    if (!Number.isInteger(index) || index < 0 || index >= steps.length) throw new Error('Некорректный номер шага.')
+    if (payload.runId !== undefined && (typeof payload.runId !== 'string' || !payload.runId || payload.runId.length > 100)) throw new Error('Некорректный запуск.')
+    cancel(); ui(); previousFocus = document.activeElement
+    run = {
+      id: payload.runId || crypto.randomUUID(), scenarioId: payload.scenarioId || '', steps, index,
+      color: /^#[0-9a-f]{6}$/i.test(payload.color) ? payload.color : '#4f46e5',
+      target: null, completed: new Set(Array.isArray(payload.completed) ? payload.completed.filter(id => ids.has(id)) : []),
+    }
+    if (run.scenarioId) { dismissed.add(run.scenarioId); store('dismissed', [...dismissed]) }
+    next.style.background = run.color
+    const rgb = [1, 3, 5].map(index => parseInt(run.color.slice(index, index + 2), 16))
+    next.style.color = (rgb[0] * 299 + rgb[1] * 587 + rgb[2] * 114) / 1000 > 145 ? '#111827' : '#fff'
+    if (!payload.started) analytics('tour_started')
+    showStep()
+  }
+
+  const storageKey = kind => 'onboarding:' + (embedded ? 'preview:' : '') + siteId + ':' + kind
+  function stored(kind) { try { return JSON.parse(sessionStorage.getItem(storageKey(kind)) || 'null') } catch { return null } }
+  function store(kind, value) { try { sessionStorage.setItem(storageKey(kind), JSON.stringify(value)); return true } catch { return false } }
+  function removeStored(kind) { try { sessionStorage.removeItem(storageKey(kind)) } catch { /* Storage can be disabled. */ } }
+  function saveRun() {
+    return store('run', { ...runState(), color: run.color, stepIds: run.steps.map(step => step.id), updatedAt: Date.now() })
+  }
+
+  function matchesTriggerPage(scenario) { return !scenario.trigger.pageUrl || scenario.trigger.pageUrl === pageUrl(location.href) }
+  function eligibleOffers() { return catalog.filter(item => item.trigger.type === 'offer' && matchesTriggerPage(item) && !dismissed.has(item.id)) }
+  function updateOffer() {
+    const scenario = catalog.find(item => item.id === offerChoices.value)
+    if (!scenario) return
+    offerTitle.textContent = scenario.trigger.title || 'Нужно помочь освоиться?'
+    offerText.textContent = scenario.trigger.text || 'Пройдите короткое обучение.'
+    offerStart.textContent = scenario.trigger.buttonText || 'Начать обучение'
+    offerStart.style.background = scenario.color
+  }
+  function renderOffer() {
+    if (validator || run || mode || launchPending || !catalog.length) return
+    ui()
+    const options = eligibleOffers()
+    offerChoices.replaceChildren()
+    for (const scenario of options) {
+      const option = document.createElement('option'); option.value = scenario.id; option.textContent = scenario.name
+      offerChoices.append(option)
+    }
+    offerChoices.hidden = options.length < 2
+    offer.hidden = !options.length
+    if (options.length) { offerChoices.value = options[0].id; updateOffer() }
+  }
+
+  function configureCatalog(config) {
+    if (!config || typeof config.siteId !== 'string' || !config.siteId || config.siteId.length > 100 || !Array.isArray(config.scenarios) || config.scenarios.length > 20 || (config.origin && config.origin !== location.origin)) throw new Error('Конфигурация не соответствует сайту.')
+    if (!embedded && settings.siteId && config.siteId !== settings.siteId) throw new Error('Идентификатор сайта не совпадает с конфигурацией.')
+    const seen = new Set()
+    const nextCatalog = config.scenarios.filter(scenario => scenario?.enabled !== false).map(scenario => {
+      if (!scenario || typeof scenario.id !== 'string' || !scenario.id || scenario.id.length > 100 || seen.has(scenario.id) || typeof scenario.name !== 'string' || !Array.isArray(scenario.steps) || !scenario.steps.length || scenario.steps.length > 50) throw new Error('Проверьте сценарии в конфигурации.')
+      seen.add(scenario.id)
+      const trigger = scenario.trigger
+      if (!trigger || !['offer', 'click', 'manual'].includes(trigger.type)) throw new Error('Выберите способ запуска сценария.')
+      if (trigger.type === 'click') {
+        if (typeof trigger.selector !== 'string' || !trigger.selector || trigger.selector.length > 2000) throw new Error('Не задана кнопка запуска сценария.')
+        document.querySelector(trigger.selector)
+      }
+      const stepIds = new Set()
+      const steps = scenario.steps.map(step => {
+        if (!step || typeof step.id !== 'string' || !step.id || step.id.length > 100 || stepIds.has(step.id) || typeof step.title !== 'string' || typeof step.text !== 'string') throw new Error('Проверьте шаги сценария.')
+        stepIds.add(step.id)
+        for (const kind of ['desktop', 'mobile']) if (!validConfig(runtimeConfig(step, kind))) throw new Error('Некорректная цель шага.')
+        return { ...step, pageUrl: pageUrl(step.pageUrl) }
+      })
+      return { ...scenario, name: scenario.name.slice(0, 120), steps, color: /^#[0-9a-f]{6}$/i.test(scenario.color) ? scenario.color : '#4f46e5', trigger: { ...trigger, pageUrl: trigger.pageUrl ? pageUrl(trigger.pageUrl) : '' } }
+    })
+    cancel(); catalog = nextCatalog; siteId = config.siteId
+    if (config.resetOffers) removeStored('dismissed')
+    const savedDismissed = stored('dismissed')
+    dismissed = new Set(Array.isArray(savedDismissed) ? savedDismissed.filter(id => typeof id === 'string') : [])
+    renderOffer()
+  }
+
+  function runtimeConfig(step, kind) {
+    return { selector: step.variants?.[kind]?.selector || step.selector || '', actions: step.variants?.[kind]?.actions || [] }
+  }
+
+  function scenarioPayload(scenario) {
+    const kind = innerWidth <= 760 ? 'mobile' : 'desktop'
+    return { scenarioId: scenario.id, color: scenario.color, steps: scenario.steps.map(step => ({ ...step, config: runtimeConfig(step, kind) })) }
+  }
+
+  function launchScenario(id) {
+    if (run || mode || validator || launchPending) return false
+    const scenario = catalog.find(item => item.id === id)
+    if (!scenario) return false
+    dismissed.add(id); store('dismissed', [...dismissed])
+    if (embedded) { launchPending = true; if (offer) offer.hidden = true; emit('scenario_triggered', { scenarioId: id }) }
+    else startRun(scenarioPayload(scenario))
+    return true
+  }
+
+  function showNotice(message) {
+    ui(); shadow.getElementById('notice-text').textContent = message || 'Повторите запуск обучения.'; notice.hidden = false
+  }
+
+  async function connect() {
+    if (embedded) return true
+    const url = new URL(settings.configUrl, location.href)
+    if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) throw new Error('Проверьте адрес конфигурации.')
+    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 10000)
+    let config
+    try {
+      const response = await fetch(url.href, { credentials: 'omit', signal: controller.signal })
+      if (!response.ok) throw new Error('Не удалось загрузить конфигурацию обучения.')
+      const body = await response.text()
+      if (body.length > 500000) throw new Error('Конфигурация обучения слишком большая.')
+      config = JSON.parse(body)
+    } finally { clearTimeout(timer) }
+    const saved = (() => { siteId = settings.siteId || config.siteId; return stored('run') })()
+    configureCatalog(config)
+    if (saved && Number.isFinite(saved.updatedAt) && Date.now() - saved.updatedAt >= 0 && Date.now() - saved.updatedAt < 3600000) {
+      const scenario = catalog.find(item => item.id === saved.scenarioId)
+      if (scenario && Number.isInteger(saved.index) && saved.index >= 0 && saved.index < scenario.steps.length &&
+          typeof saved.runId === 'string' && saved.runId.length > 0 && saved.runId.length <= 100 &&
+          JSON.stringify(saved.stepIds) === JSON.stringify(scenario.steps.map(step => step.id))) {
+        startRun({ ...scenarioPayload(scenario), runId: saved.runId, index: saved.index, completed: saved.completed, started: true })
+      } else removeStored('run')
+    } else if (saved) removeStored('run')
+    window.dispatchEvent(new CustomEvent('onboarding:ready', { detail: { siteId } }))
+    return true
+  }
+
+  const ready = connect().catch(error => { emit('configuration_error', { message: error.message }); console.warn('[Onboarding]', error.message); return false })
+  window.Onboarding = {
+    ready,
+    start: async id => { if (!(await ready)) return false; return launchScenario(id) },
+    stop: () => { cancel(); renderOffer() },
+    scenarios: () => catalog.map(({ id, name }) => ({ id, name })),
+  }
 })()

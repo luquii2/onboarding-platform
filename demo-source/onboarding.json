@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "siteId": "demo-school",
+  "scenarios": [
+    {
+      "id": "school-intro",
+      "name": "Знакомство со школой",
+      "color": "#4f46e5",
+      "trigger": {
+        "type": "offer",
+        "pageUrl": "",
+        "title": "Помочь освоиться?",
+        "text": "За четыре шага покажем курсы, программу обучения и запись. Можно начать с любой страницы.",
+        "buttonText": "Познакомиться со школой"
+      },
+      "steps": [
+        { "id": "intro-home", "title": "Добро пожаловать", "text": "Здесь начинается знакомство со школой. Нажмите «Далее», и мы откроем каталог.", "pageUrl": "index.html", "selector": "#hero-title" },
+        { "id": "intro-courses", "title": "Выберите направление", "text": "В каталоге собраны курсы. Следующий шаг откроет страницу программы.", "pageUrl": "courses.html", "selector": "#courses-title" },
+        { "id": "intro-course", "title": "Посмотрите программу", "text": "Здесь — длительность курса и темы обучения. Перейдём к записи.", "pageUrl": "course.html", "selector": "#course-title" },
+        { "id": "intro-signup", "title": "Запишитесь на обучение", "text": "Заявку можно оставить здесь. Обучение завершено; данные формы автоматически не отправляются.", "pageUrl": "signup.html", "selector": "#signup-title" }
+      ]
+    },
+    {
+      "id": "signup-help",
+      "name": "Заполнение заявки",
+      "color": "#0f766e",
+      "trigger": { "type": "click", "pageUrl": "signup.html", "selector": "#start-signup-tour" },
+      "steps": [
+        { "id": "signup-name", "title": "Ваше имя", "text": "Укажите, как к вам обращаться.", "pageUrl": "signup.html", "selector": "#input-name" },
+        { "id": "signup-email", "title": "Электронная почта", "text": "На этот адрес школа сможет прислать информацию о курсе.", "pageUrl": "signup.html", "selector": "#input-email" },
+        { "id": "signup-course", "title": "Интересующий курс", "text": "Выберите подходящую программу. После обучения заполните и отправьте форму самостоятельно.", "pageUrl": "signup.html", "selector": "#input-course" }
+      ]
+    }
+  ]
+}
