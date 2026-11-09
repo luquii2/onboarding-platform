@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import PreviewFrame from './components/PreviewFrame.vue'
-import { DEVICES, applyTarget, canonicalUrl, configFor, createStep, createScenario, createPlayback, exportProject, isDraft, normalizeActions, readProject, validationKey } from './model.js'
+import { DEVICES, applyTarget, canonicalUrl, configFor, createStep, createScenario, createPlayback, exportProject, isDraft, normalizeActions, readProject, validationKey, confirmTrigger, triggerErrors, triggerIsReady } from './model.js'
 import './styles.css'
 
 const SITE = import.meta.env.VITE_DEMO_SITE_URL || 'http://localhost:4174/'
@@ -13,12 +13,33 @@ const scenario = computed(() => project.value.scenarios.find(item => item.id ===
 const steps = computed({ get: () => scenario.value.steps, set: value => { scenario.value.steps = value } })
 const color = computed({ get: () => scenario.value.color, set: value => { scenario.value.color = value } })
 const selectedId = ref(null), device = ref('desktop')
-const status = ref('Подключаем сайт…'), events = ref([]), interaction = ref(null), playback = ref(null), testingTriggers = ref(false)
+const status = ref('Подключаем сайт…'), events = ref([]), interaction = ref(null), playback = ref(null), launchSession = ref(null)
 const playing = computed(() => !!playback.value)
+const armed = computed(() => !!launchSession.value)
+const settingsDetails = ref(null), settingsOpen = ref(false), settingsAttempted = ref(false), settingsMessage = ref(''), notification = ref(null)
+const launchReady = computed(() => triggerIsReady(scenario.value, SITE))
+const configurationErrors = computed(() => settingsAttempted.value ? triggerErrors(scenario.value.trigger, SITE) : {})
 const selected = computed(() => steps.value.find(step => step.id === selectedId.value))
 const viewport = computed(() => DEVICES[device.value])
 const checkJob = ref(null), checks = ref({ desktop: { state: 'idle' }, mobile: { state: 'idle' } })
-let navigationIntent = '', validationTimer, highlightVersion = 0, sequence = 0, disposed = false, runRequest = 0, triggerRequest = 0
+let navigationIntent = '', validationTimer, notificationTimer, highlightVersion = 0, sequence = 0, disposed = false, runRequest = 0, triggerRequest = 0
+const availablePages = computed(() => {
+  const urls = new Set([SITE, currentPage.value, ...project.value.pages.map(page => page.url)])
+  for (const item of project.value.scenarios) {
+    for (const step of item.steps) urls.add(step.pageUrl)
+    if (item.trigger.pageUrl) urls.add(item.trigger.pageUrl)
+  }
+  return [...urls].map(url => ({ url, label: pageLabel(url) }))
+})
+const waitingMessage = computed(() => {
+  if (!launchSession.value) return ''
+  const trigger = launchSession.value.config.scenarios[0].trigger
+  const elsewhere = trigger.pageUrl && trigger.pageUrl !== currentPage.value
+  const destination = elsewhere ? 'Перейдите на страницу «' + pageLabel(trigger.pageUrl) + '». ' : ''
+  if (trigger.type === 'click') return destination + 'Ожидаем нажатия на выбранный элемент сайта.'
+  if (trigger.type === 'manual') return 'Ожидаем вызова Onboarding.start() из кода сайта.'
+  return destination + (elsewhere ? 'Там появится приглашение. ' : 'Приглашение появится справа внизу сайта. ') + 'Нажмите «' + trigger.buttonText + '», чтобы начать обучение.'
+})
 const configUrl = ref(new URL('onboarding.json', SITE).href)
 const installScript = computed(() => {
   const attr = value => String(value).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;')
@@ -36,9 +57,9 @@ watch(project, () => {
   catch { status.value = 'Браузер не разрешил сохранить черновик.' }
 }, { deep: true, immediate: true })
 watch(() => project.value.scenarios, () => {
-  if (testingTriggers.value && !playing.value) {
+  if (armed.value && !playing.value) {
     disableTriggers()
-    status.value = 'Настройки изменились. Нажмите «Проверить триггеры», чтобы применить их в предпросмотре.'
+    status.value = 'Настройки изменились. Нажмите «Запустить тур» снова, чтобы применить их.'
   }
 }, { deep: true })
 
@@ -50,6 +71,52 @@ function describeState(state) {
 
 function pageName(url) {
   try { return new URL(url).pathname.split('/').pop() || 'Главная' } catch { return 'Страница сайта' }
+}
+
+function pageLabel(value) {
+  const url = new URL(value)
+  const title = project.value.pages.find(page => page.url === value)?.title || pageName(value)
+  const base = new URL(SITE).pathname
+  const path = url.pathname.startsWith(base) ? '/' + url.pathname.slice(base.length) : url.pathname
+  return title + ' (' + path + url.search + ')'
+}
+
+function rememberPage(url, title) {
+  const value = String(title || pageName(url)).slice(0, 256)
+  const page = project.value.pages.find(item => item.url === url)
+  if (page) { if (page.title !== value) page.title = value }
+  else {
+    project.value.pages.push({ url, title: value })
+    if (project.value.pages.length > 100) project.value.pages.splice(1, 1)
+  }
+}
+
+function clearNotification() { clearTimeout(notificationTimer); notification.value = null }
+function notify(title, text) {
+  clearNotification(); notification.value = { title, text }
+  notificationTimer = setTimeout(clearNotification, 6000)
+}
+
+function resetSettingsPanel() { settingsOpen.value = false; settingsAttempted.value = false; settingsMessage.value = '' }
+
+async function showSettingsError(message) {
+  settingsAttempted.value = true; settingsMessage.value = message; settingsOpen.value = true
+  status.value = message
+  await nextTick()
+  settingsDetails.value?.querySelector('[aria-invalid="true"], [data-testid="save-launch"]')?.focus()
+}
+
+async function saveLaunchSettings() {
+  settingsAttempted.value = true
+  try {
+    disableTriggers(); confirmTrigger(scenario.value, SITE)
+    settingsMessage.value = ''; settingsOpen.value = false
+    status.value = 'Настройки запуска сохранены. Теперь можно запустить тур.'
+  } catch (error) { await showSettingsError(error.message) }
+}
+
+function useCurrentPage() {
+  scenario.value.trigger.pageScope = 'page'; scenario.value.trigger.pageUrl = currentPage.value
 }
 
 function refreshChecks() {
@@ -102,10 +169,10 @@ async function ensurePage(step) {
 
 async function highlightSelected() {
   const step = selected.value, token = ++highlightVersion
-  if (!step || isDraft(step) || !mainReady.value || interaction.value || playing.value || testingTriggers.value || step.pageUrl !== currentPage.value) return
+  if (!step || isDraft(step) || !mainReady.value || interaction.value || playing.value || armed.value || step.pageUrl !== currentPage.value) return
   try {
     const result = await mainFrame.value.request('highlight', { config: configFor(step, device.value) })
-    if (token !== highlightVersion || selectedId.value !== step.id || interaction.value || playing.value) return
+    if (token !== highlightVersion || selectedId.value !== step.id || interaction.value || playing.value || armed.value) return
     status.value = result.state === 'ready' ? 'Цель шага подсвечена.' : 'Для этой версии нужно настроить цель. Подсказка справа.'
   } catch (error) { if (token === highlightVersion) status.value = error.message }
 }
@@ -113,6 +180,7 @@ async function highlightSelected() {
 function onMainLoading() {
   mainReady.value = false; runRequest++
   if (playback.value) status.value = 'Подключаем страницу шага ' + (playback.value.index + 1) + '…'
+  else if (armed.value) status.value = 'Тур запущен. Ждём загрузки страницы сайта…'
   if (interaction.value && !navigationIntent) {
     interaction.value = null; sequence++
     status.value = 'Страница изменилась. Шаг сохранен; выбор элемента можно повторить.'
@@ -123,6 +191,7 @@ function onMainReady(info) {
   let url
   try { url = canonicalUrl(info.url, SITE) } catch { status.value = 'Сайт перешел на неподдерживаемый адрес.'; return }
   currentPage.value = url
+  rememberPage(url, info.title)
   navigationIntent = ''
   mainReady.value = true
   if (playback.value) {
@@ -131,14 +200,14 @@ function onMainReady(info) {
     return
   }
   if (selected.value && selected.value.pageUrl !== url) selectedId.value = null
-  if (testingTriggers.value) { syncTriggers(); return }
+  if (armed.value) { syncTriggers(); return }
   if (!interaction.value) { status.value = 'Сайт подключен. Выберите шаг или добавьте новый.'; highlightSelected() }
 }
 
 function onMainOffline(info) {
   mainReady.value = false
   if (playback.value) failPlayback(info.message)
-  else status.value = info.message
+  else { disableTriggers(); status.value = info.message }
 }
 
 async function selectStep(step) {
@@ -203,7 +272,7 @@ async function cancelInteraction() {
   const kind = interaction.value?.kind
   sequence++; highlightVersion++; interaction.value = null
   if (mainReady.value) await mainFrame.value.request('cancel').catch(() => {})
-  status.value = kind === 'trigger' ? 'Выбор кнопки запуска отменён.' : selected.value && isDraft(selected.value) ? 'Выбор отменен. Черновик шага остался в списке.' : 'Настройка отменена. Сохраненные настройки не изменились.'
+  status.value = kind === 'trigger' ? 'Выбор элемента запуска отменён.' : selected.value && isDraft(selected.value) ? 'Выбор отменен. Черновик шага остался в списке.' : 'Настройка отменена. Сохраненные настройки не изменились.'
 }
 
 function onWidgetEvent(message) {
@@ -214,9 +283,11 @@ function onWidgetEvent(message) {
         const target = project.value.scenarios.find(item => item.id === task.scenarioId)
         if (!target) return
         target.trigger.selector = message.selector
+        target.trigger.label = message.label || 'Выбранный элемент'
         target.trigger.pageUrl = canonicalUrl(message.pageUrl, SITE)
+        target.trigger.pageScope = 'page'
         interaction.value = null; sequence++
-        status.value = 'Кнопка запуска выбрана. Проверьте триггер на сайте.'
+        status.value = 'Элемент запуска выбран. Сохраните настройки запуска.'
       } catch (error) { status.value = error.message }
       return
     }
@@ -233,11 +304,12 @@ function onWidgetEvent(message) {
     task.actions = normalizeActions(message.actions)
   } else if (['pick-cancelled', 'pick-error'].includes(message.name) && task && message.taskId === task.id) {
     interaction.value = null; sequence++
-    status.value = message.message || (task.kind === 'trigger' ? 'Выбор кнопки запуска отменён.' : 'Выбор отменен. Шаг остался в списке.')
+    status.value = message.message || (task.kind === 'trigger' ? 'Выбор элемента запуска отменён.' : 'Выбор отменен. Шаг остался в списке.')
   } else if (message.name === 'record-note' && task && message.taskId === task.id) status.value = message.message
-  else if (message.name === 'scenario_triggered' && testingTriggers.value && !playing.value) {
-    const target = project.value.scenarios.find(item => item.id === message.scenarioId && item.enabled)
-    if (target) preview(target)
+  else if (message.name === 'trigger_dismissed' && armed.value && !playing.value && Array.isArray(message.scenarioIds) && message.scenarioIds.includes(launchSession.value.scenario.id)) {
+    disableTriggers(); status.value = 'Приглашение закрыто. Нажмите «Запустить тур», чтобы показать его снова.'
+  } else if (message.name === 'scenario_triggered' && armed.value && !playing.value && message.scenarioId === launchSession.value.scenario.id) {
+    clearNotification(); preview(launchSession.value.scenario)
   } else if (playback.value && message.runId === playback.value.id) {
     const run = playback.value, step = run.steps[message.index]
     if (!Number.isInteger(message.index) || !step || message.stepId !== step.id) return
@@ -250,8 +322,8 @@ function onWidgetEvent(message) {
     if (message.name === 'step_shown') status.value = run.scenarioName + ' · шаг ' + (run.index + 1) + ' из ' + run.steps.length + '.'
     if (['tour_completed', 'tour_skipped', 'tour_stopped', 'tour_error'].includes(message.name)) {
       playback.value = null; runRequest++
+      disableTriggers()
       status.value = message.name === 'tour_error' ? 'Нужно настроить шаг: ' + message.message : 'Предпросмотр завершен.'
-      if (testingTriggers.value && message.name !== 'tour_error') syncTriggers()
     }
   }
 }
@@ -285,7 +357,7 @@ function resetPlayback() {
 
 function failPlayback(message) {
   if (playback.value) recordEvent({ name: 'tour_error' }, playback.value)
-  playback.value = null; runRequest++; status.value = message
+  playback.value = null; runRequest++; disableTriggers(); status.value = message
   if (mainReady.value) mainFrame.value.request('cancel').catch(() => {})
 }
 
@@ -320,21 +392,20 @@ async function preview(target = scenario.value) {
 }
 
 async function stopPreview() {
-  resetPlayback()
+  resetPlayback(); disableTriggers()
   if (mainReady.value) await mainFrame.value.request('cancel').catch(() => {})
   status.value = 'Сценарий остановлен.'
-  if (testingTriggers.value) syncTriggers()
 }
 
 function addScenario() {
-  disableTriggers(); selectedId.value = null
+  disableTriggers(); resetSettingsPanel(); selectedId.value = null
   const item = createScenario('Сценарий ' + (project.value.scenarios.length + 1))
   project.value.scenarios.push(item); project.value.activeScenarioId = item.id
   status.value = 'Добавьте шаги нового сценария и выберите способ запуска.'
 }
 
 async function chooseScenario(event) {
-  resetPlayback(); disableTriggers(); interaction.value = null; sequence++
+  resetPlayback(); disableTriggers(); resetSettingsPanel(); interaction.value = null; sequence++
   project.value.activeScenarioId = event.target.value
   selectedId.value = null
   if (scenario.value.steps[0]) await selectStep(scenario.value.steps[0])
@@ -342,7 +413,7 @@ async function chooseScenario(event) {
 
 function deleteScenario() {
   if (project.value.scenarios.length < 2 || !confirm('Удалить сценарий «' + scenario.value.name + '» и его шаги?')) return
-  disableTriggers(); interaction.value = null; sequence++; selectedId.value = null
+  disableTriggers(); resetSettingsPanel(); interaction.value = null; sequence++; selectedId.value = null
   project.value.scenarios = project.value.scenarios.filter(item => item.id !== scenario.value.id)
   project.value.activeScenarioId = project.value.scenarios[0].id
 }
@@ -351,30 +422,46 @@ async function pickTrigger() {
   disableTriggers(); highlightVersion++
   const task = { id: crypto.randomUUID(), kind: 'trigger', scenarioId: scenario.value.id, phase: 'pick', actions: [] }
   interaction.value = task
-  try { await mainFrame.value.request('pick-start', { taskId: task.id }); status.value = 'Нажмите на кнопку сайта, которая должна запускать этот сценарий.' }
+  try { await mainFrame.value.request('pick-start', { taskId: task.id }); status.value = 'Нажмите на элемент сайта, который должен запускать этот сценарий.' }
   catch (error) { interaction.value = null; status.value = error.message }
 }
 
 function disableTriggers() {
-  if (!testingTriggers.value) return
-  testingTriggers.value = false; triggerRequest++
+  if (!armed.value) return
+  launchSession.value = null; triggerRequest++; clearNotification()
   if (mainReady.value) mainFrame.value.request('configure', { siteId: project.value.siteId, scenarios: [] }).catch(() => {})
 }
 
 async function syncTriggers(resetOffers = false) {
+  const session = launchSession.value
+  if (!session || !mainReady.value) return
   const ticket = ++triggerRequest
   try {
-    const result = await mainFrame.value.request('configure', { ...exportProject(project.value, SITE), resetOffers })
-    if (ticket !== triggerRequest || !testingTriggers.value) return
+    const result = await mainFrame.value.request('configure', { ...session.config, resetOffers })
+    if (ticket !== triggerRequest || launchSession.value !== session) return
     if (!result?.ok) throw new Error(result?.message || 'Не удалось настроить триггеры. Проверьте выбранные элементы.')
-    status.value = 'Триггеры включены в предпросмотре: откройте приглашение или нажмите выбранную кнопку сайта.'
-  } catch (error) { if (ticket === triggerRequest) { disableTriggers(); status.value = error.message } }
+    if (!playing.value) {
+      status.value = 'Тур запущен. ' + waitingMessage.value
+      if (notification.value?.title === 'Тур запущен') notification.value.text = waitingMessage.value
+    }
+    return true
+  } catch (error) {
+    if (ticket === triggerRequest && launchSession.value === session && mainReady.value) { disableTriggers(); status.value = error.message }
+    return false
+  }
 }
 
-async function testTriggers() {
-  if (testingTriggers.value) { disableTriggers(); status.value = 'Проверка триггеров выключена.'; return }
-  testingTriggers.value = true; highlightVersion++
-  await syncTriggers(true)
+async function startTour() {
+  clearNotification()
+  if (!launchReady.value) { await showSettingsError('Настройте и сохраните запуск сценария перед началом тура.'); return }
+  try {
+    const snapshot = JSON.parse(JSON.stringify(scenario.value))
+    const config = exportProject({ ...project.value, scenarios: [{ ...snapshot, enabled: true }] }, SITE)
+    highlightVersion++; sequence++
+    launchSession.value = { scenario: snapshot, config }
+    notify('Тур запущен', waitingMessage.value)
+    await syncTriggers(true)
+  } catch (error) { disableTriggers(); status.value = error.message }
 }
 
 function downloadConfig() {
@@ -388,7 +475,7 @@ function downloadConfig() {
 }
 
 watch(device, async () => { await nextTick(); if (!interaction.value && !playing.value) highlightSelected() })
-onBeforeUnmount(() => { disposed = true; clearTimeout(validationTimer); sequence++; highlightVersion++ })
+onBeforeUnmount(() => { disposed = true; clearTimeout(validationTimer); clearNotification(); sequence++; highlightVersion++ })
 </script>
 
 <template>
@@ -396,10 +483,14 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(validationTimer); sequence
     <header class="app-header">
       <div><p class="eyebrow">ИНТЕРАКТИВНЫЙ ОНБОРДИНГ</p><h1>Конструктор сценариев</h1></div>
       <span class="connection" :class="{ online: mainReady }">{{ mainReady ? 'Сайт подключен' : 'Подключаем сайт' }}</span>
-      <button v-if="playing" class="button" @click="stopPreview">Остановить тур</button>
-      <button v-else class="button primary" :disabled="!mainReady || !steps.length || !!interaction" @click="preview()">Запустить тур</button>
+      <button v-if="playing || armed" class="button" @click="stopPreview">Остановить тур</button>
+      <button v-else class="button primary" :disabled="!mainReady || !steps.length || !!interaction" @click="startTour">Запустить тур</button>
     </header>
-    <p class="status-bar" role="status">{{ status }}</p>
+    <p class="status-bar" :role="notification ? undefined : 'status'">{{ status }}</p>
+    <div v-if="notification" class="launch-notice" role="status" aria-live="polite">
+      <button class="notice-close" aria-label="Закрыть уведомление" @click="clearNotification">×</button>
+      <strong>{{ notification.title }}</strong><p>{{ notification.text }}</p>
+    </div>
 
     <section class="panel scenarios-panel" aria-label="Сценарии сайта">
       <div class="scenario-toolbar">
@@ -408,30 +499,51 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(validationTimer); sequence
         <button class="button subtle" :disabled="playing || !!interaction || project.scenarios.length < 2" @click="deleteScenario">Удалить сценарий</button>
         <label class="enabled-field"><input v-model="scenario.enabled" type="checkbox" :disabled="playing || !!interaction"> Включён на сайте</label>
       </div>
-      <div class="scenario-settings">
+      <details ref="settingsDetails" class="launch-settings" :open="settingsOpen" @toggle="settingsOpen = $event.target.open">
+        <summary><span>Настройки запуска</span><span class="setup-badge" :class="{ ready: launchReady }">{{ launchReady ? 'Сохранено' : scenario.triggerConfirmation ? 'Есть изменения' : 'Обязательно' }}</span></summary>
+        <p class="hint setup-intro">Выберите, как и где предложить обучение. Перед запуском сохраните эти настройки.</p>
+        <p v-if="settingsMessage" class="settings-error" role="alert">{{ settingsMessage }}</p>
+        <div class="scenario-settings">
         <div>
           <label class="field">Название сценария<input v-model="scenario.name" maxlength="120" :disabled="playing || !!interaction"></label>
           <label class="field">Способ запуска<select v-model="scenario.trigger.type" :disabled="playing || !!interaction"><option value="offer">Приглашение справа внизу</option><option value="click">Клик по элементу сайта</option><option value="manual">Вызов из JavaScript</option></select></label>
-          <label class="field">{{ scenario.trigger.type === 'offer' ? 'Показывать на странице' : 'Страница запуска' }}<input v-model="scenario.trigger.pageUrl" :disabled="playing || !!interaction" placeholder="Пусто — любая страница сайта"></label>
+          <fieldset v-if="scenario.trigger.type !== 'manual'" class="page-scope" :disabled="playing || !!interaction">
+            <legend>{{ scenario.trigger.type === 'offer' ? 'Где показывать приглашение?' : 'Где ждать нажатия?' }}</legend>
+            <label class="page-choice"><input v-model="scenario.trigger.pageScope" type="radio" value="all"> На всех страницах сайта</label>
+            <label class="page-choice"><input v-model="scenario.trigger.pageScope" type="radio" value="page"> На выбранной странице</label>
+            <div v-if="scenario.trigger.pageScope === 'page'" class="page-picker">
+              <label class="field">Страница запуска<select v-model="scenario.trigger.pageUrl" :aria-invalid="!!configurationErrors.pageUrl" :aria-describedby="configurationErrors.pageUrl ? 'launch-page-error' : 'launch-page-help'"><option disabled value="">Выберите страницу</option><option v-for="page in availablePages" :key="page.url" :value="page.url">{{ page.label }}</option></select></label>
+              <p v-if="configurationErrors.pageUrl" id="launch-page-error" class="field-error">{{ configurationErrors.pageUrl }}</p>
+              <button class="button small" :disabled="!mainReady" @click="useCurrentPage">Использовать открытую страницу</button>
+              <p id="launch-page-help" class="hint">Адрес вводить не нужно. Откройте нужную страницу в окне сайта и нажмите эту кнопку или выберите посещённую страницу из списка.</p>
+            </div>
+          </fieldset>
           <div v-if="scenario.trigger.type === 'click'">
-            <button class="button" :disabled="!mainReady || playing || !!interaction" @click="pickTrigger">Выбрать кнопку запуска</button>
-            <p class="hint target-selector">{{ scenario.trigger.selector || 'Выберите элемент в предпросмотре сайта.' }}</p>
+            <button class="button" :disabled="!mainReady || playing || !!interaction" :aria-invalid="!!configurationErrors.selector" @click="pickTrigger">Выбрать элемент запуска</button>
+            <p class="hint">{{ scenario.trigger.selector ? 'Выбрано: ' + (scenario.trigger.label || 'элемент сайта') : 'Нажмите кнопку выше, затем выберите нужный элемент в окне сайта.' }}</p>
+            <p v-if="configurationErrors.selector" class="field-error">{{ configurationErrors.selector }}</p>
           </div>
           <p v-if="scenario.trigger.type === 'manual'" class="hint">Вызовите для этого сценария:<code class="code-block">window.Onboarding.start("{{ scenario.id }}")</code></p>
         </div>
         <div v-if="scenario.trigger.type === 'offer'" class="offer-settings">
-          <label class="field">Заголовок приглашения<input v-model="scenario.trigger.title" maxlength="120" :disabled="playing || !!interaction"></label>
-          <label class="field">Текст приглашения<textarea v-model="scenario.trigger.text" rows="2" maxlength="500" :disabled="playing || !!interaction" /></label>
-          <label class="field">Текст кнопки<input v-model="scenario.trigger.buttonText" maxlength="80" :disabled="playing || !!interaction"></label>
+          <label class="field">Заголовок приглашения <span aria-hidden="true">*</span><input v-model="scenario.trigger.title" aria-label="Заголовок приглашения" required maxlength="120" :disabled="playing || !!interaction" :aria-invalid="!!configurationErrors.title" :aria-describedby="configurationErrors.title ? 'launch-title-error' : undefined"></label>
+          <p v-if="configurationErrors.title" id="launch-title-error" class="field-error">{{ configurationErrors.title }}</p>
+          <label class="field">Текст приглашения <span aria-hidden="true">*</span><textarea v-model="scenario.trigger.text" aria-label="Текст приглашения" required rows="2" maxlength="500" :disabled="playing || !!interaction" :aria-invalid="!!configurationErrors.text" :aria-describedby="configurationErrors.text ? 'launch-text-error' : undefined" /></label>
+          <p v-if="configurationErrors.text" id="launch-text-error" class="field-error">{{ configurationErrors.text }}</p>
+          <label class="field">Текст кнопки <span aria-hidden="true">*</span><input v-model="scenario.trigger.buttonText" aria-label="Текст кнопки" required maxlength="80" :disabled="playing || !!interaction" :aria-invalid="!!configurationErrors.buttonText" :aria-describedby="configurationErrors.buttonText ? 'launch-button-error' : undefined"></label>
+          <p v-if="configurationErrors.buttonText" id="launch-button-error" class="field-error">{{ configurationErrors.buttonText }}</p>
         </div>
         <div class="scenario-help">
-          <strong>{{ scenario.steps.length }} шагов · один сценарий</strong>
-          <p>Добавляйте шаги с разных страниц. Тур начинается с первого шага и сам открывает нужные страницы при нажатии «Далее» и «Назад».</p>
-          <button class="button full-width" :disabled="!mainReady || playing || !!interaction" @click="testTriggers">{{ testingTriggers ? 'Выключить триггеры' : 'Проверить триггеры' }}</button>
-          <p class="hint">Проверка запускает включённые сценарии внутри предпросмотра. Для запуска на отдельном сайте скачайте конфигурацию ниже.</p>
+          <strong>Как начнётся обучение</strong>
+          <p v-if="scenario.trigger.type === 'offer'">После нажатия «Запустить тур» на подходящей странице появится приглашение справа внизу. Шаги начнутся, когда посетитель нажмёт его кнопку.</p>
+          <p v-else-if="scenario.trigger.type === 'click'">Нажмите «Запустить тур», перейдите на нужную страницу и нажмите выбранный элемент. До этого сценарий будет ждать.</p>
+          <p v-else>Нажмите «Запустить тур», затем вызовите указанный код в контексте сайта. До вызова шаги не показываются.</p>
+          <p class="hint">Запускается выбранный сценарий. Его шаги могут вести по разным страницам сайта.</p>
         </div>
-      </div>
-      <div v-if="interaction?.kind === 'trigger'" class="interaction-card"><strong>Выберите кнопку запуска в окне сайта</strong><p>Она будет запускать только сценарий «{{ scenario.name }}».</p><button class="button" @click="cancelInteraction">Отменить настройку</button></div>
+        </div>
+        <div class="launch-actions"><button class="button primary" data-testid="save-launch" :disabled="playing || !!interaction" @click="saveLaunchSettings">Сохранить настройки запуска</button><span v-if="launchReady" class="hint">Настройки сохранены</span></div>
+      </details>
+      <div v-if="interaction?.kind === 'trigger'" class="interaction-card"><strong>Выберите элемент запуска в окне сайта</strong><p>Он будет запускать только сценарий «{{ scenario.name }}».</p><button class="button" @click="cancelInteraction">Отменить настройку</button></div>
       <details class="connection-details">
         <summary>Подключение сайта и экспорт</summary>
         <p>В прототипе настройки сохраняются в этом браузере. Чтобы применить их на сайте, разместите файл <code>onboarding.json</code> и добавьте скрипт на все страницы. После изменений обновляйте файл конфигурации.</p>
@@ -467,7 +579,7 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(validationTimer); sequence
           </div>
           <a :href="currentPage" target="_blank" rel="noopener">Открыть сайт ↗</a>
         </div>
-        <p class="preview-caption">{{ viewport.label }} · ширина {{ viewport.width }} px · {{ playing ? 'Шаг ' + (playback.index + 1) + ' из ' + playback.steps.length : 'масштаб подстраивается под панель' }}</p>
+        <p class="preview-caption">{{ viewport.label }} · ширина {{ viewport.width }} px · {{ playing ? 'Шаг ' + (playback.index + 1) + ' из ' + playback.steps.length : armed ? 'ожидаем запуска сценария' : 'масштаб подстраивается под панель' }}</p>
         <div class="preview-surface">
           <PreviewFrame :key="frameEpoch" ref="mainFrame" :url="frameUrl" :width="viewport.width" :height="viewport.height"
             @loading="onMainLoading" @ready="onMainReady" @disconnected="onMainOffline" @message="onWidgetEvent" />

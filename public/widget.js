@@ -159,8 +159,10 @@
     back = get('back'); next = get('next'); skip = get('skip')
     offer = get('offer'); offerTitle = get('offer-title'); offerText = get('offer-text'); offerStart = get('offer-start'); offerChoices = get('offer-choices'); notice = get('notice')
     get('offer-close').onclick = () => {
-      for (const scenario of eligibleOffers()) dismissed.add(scenario.id)
+      const scenarioIds = eligibleOffers().map(scenario => scenario.id)
+      for (const id of scenarioIds) dismissed.add(id)
       store('dismissed', [...dismissed]); offer.hidden = true
+      emit('trigger_dismissed', { scenarioIds })
     }
     offerChoices.onchange = updateOffer
     offerStart.onclick = () => launchScenario(offerChoices.value)

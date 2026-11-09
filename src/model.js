@@ -91,9 +91,9 @@ export function validationKey(step) {
 
 export function createScenario(name = 'Новый сценарий') {
   return {
-    id: crypto.randomUUID(), name, enabled: true, color: '#4f46e5', steps: [],
+    id: crypto.randomUUID(), name, enabled: true, color: '#4f46e5', steps: [], triggerConfirmation: '',
     trigger: {
-      type: 'offer', pageUrl: '', selector: '',
+      type: 'offer', pageScope: 'all', pageUrl: '', selector: '', label: '',
       title: 'Показать, как всё устроено?',
       text: 'Пройдите короткое обучение и познакомьтесь с возможностями сайта.',
       buttonText: 'Начать обучение',
@@ -117,18 +117,71 @@ export function readProject(value, baseUrl) {
       let pageUrl = ''
       try { if (trigger.pageUrl) pageUrl = canonicalUrl(trigger.pageUrl, baseUrl) } catch { /* A new page can be selected in the editor. */ }
       scenario.trigger = {
-        ...scenario.trigger, type: trigger.type, pageUrl, selector: text(trigger.selector, 2000),
-        title: text(trigger.title, 120) || scenario.trigger.title,
-        text: text(trigger.text, 500) || scenario.trigger.text,
-        buttonText: text(trigger.buttonText, 80) || scenario.trigger.buttonText,
+        ...scenario.trigger, type: trigger.type, pageUrl, selector: text(trigger.selector, 2000), label: text(trigger.label, 100),
+        pageScope: ['all', 'page'].includes(trigger.pageScope) ? trigger.pageScope : trigger.pageUrl ? 'page' : 'all',
+        title: typeof trigger.title === 'string' ? text(trigger.title, 120) : scenario.trigger.title,
+        text: typeof trigger.text === 'string' ? text(trigger.text, 500) : scenario.trigger.text,
+        buttonText: typeof trigger.buttonText === 'string' ? text(trigger.buttonText, 80) : scenario.trigger.buttonText,
       }
     }
+    scenario.triggerConfirmation = text(item?.triggerConfirmation, 16000)
     return scenario
   })
+  const pages = new Map([[canonicalUrl(baseUrl, baseUrl), { url: canonicalUrl(baseUrl, baseUrl), title: 'Главная страница' }]])
+  for (const page of Array.isArray(value?.pages) ? value.pages.slice(-100) : []) {
+    if (typeof page?.url !== 'string' || !page.url) continue
+    try {
+      const url = canonicalUrl(page?.url, baseUrl)
+      pages.set(url, { url, title: text(page?.title, 256) })
+    } catch { /* Only pages of this site can be selected. */ }
+  }
   return {
-    schema: 4, siteId: text(value?.siteId, 100) || crypto.randomUUID(), scenarios,
+    schema: 4, siteId: text(value?.siteId, 100) || crypto.randomUUID(), scenarios, pages: [...pages.values()],
     activeScenarioId: scenarios.some(item => item.id === value?.activeScenarioId) ? value.activeScenarioId : scenarios[0].id,
   }
+}
+
+export function triggerErrors(trigger, baseUrl) {
+  const errors = {}
+  if (!trigger || !['offer', 'click', 'manual'].includes(trigger.type)) return { type: 'Выберите способ запуска.' }
+  if (trigger.type === 'offer') {
+    if (typeof trigger.title !== 'string' || !trigger.title.trim()) errors.title = 'Добавьте заголовок приглашения.'
+    if (typeof trigger.text !== 'string' || !trigger.text.trim()) errors.text = 'Добавьте текст приглашения.'
+    if (typeof trigger.buttonText !== 'string' || !trigger.buttonText.trim()) errors.buttonText = 'Добавьте текст кнопки.'
+  }
+  if (trigger.type === 'click' && (typeof trigger.selector !== 'string' || !trigger.selector.trim())) errors.selector = 'Выберите элемент запуска в окне сайта.'
+  if (trigger.type !== 'manual' && !['all', 'page'].includes(triggerPageScope(trigger))) errors.pageUrl = 'Выберите, на каких страницах запускать сценарий.'
+  if (trigger.type !== 'manual' && triggerPageScope(trigger) === 'page') {
+    if (typeof trigger.pageUrl !== 'string' || !trigger.pageUrl.trim()) errors.pageUrl = 'Выберите страницу из списка или используйте открытую страницу сайта.'
+    else try { canonicalUrl(trigger.pageUrl, baseUrl) } catch { errors.pageUrl = 'Выберите страницу подключённого сайта.' }
+  }
+  return errors
+}
+
+const triggerPageScope = trigger => trigger.pageScope ?? (trigger.pageUrl ? 'page' : 'all')
+
+export function triggerKey(trigger) {
+  return JSON.stringify({
+    type: trigger.type,
+    pageScope: trigger.type === 'manual' ? 'all' : triggerPageScope(trigger),
+    pageUrl: trigger.type !== 'manual' && triggerPageScope(trigger) === 'page' ? trigger.pageUrl : '',
+    ...(trigger.type === 'offer' ? { title: trigger.title, text: trigger.text, buttonText: trigger.buttonText } : {}),
+    ...(trigger.type === 'click' ? { selector: trigger.selector } : {}),
+  })
+}
+
+export function triggerIsReady(scenario, baseUrl) {
+  return !Object.keys(triggerErrors(scenario.trigger, baseUrl)).length && scenario.triggerConfirmation === triggerKey(scenario.trigger)
+}
+
+export function confirmTrigger(scenario, baseUrl) {
+  const errors = triggerErrors(scenario.trigger, baseUrl)
+  if (Object.keys(errors).length) throw new Error(Object.values(errors)[0])
+  const trigger = scenario.trigger
+  trigger.pageScope = triggerPageScope(trigger)
+  if (trigger.type !== 'manual' && trigger.pageScope === 'page') trigger.pageUrl = canonicalUrl(trigger.pageUrl, baseUrl)
+  for (const field of ['title', 'text', 'buttonText', 'selector']) if (typeof trigger[field] === 'string') trigger[field] = trigger[field].trim()
+  scenario.triggerConfirmation = triggerKey(trigger)
 }
 
 export function createPlayback(scenario, device, baseUrl) {
@@ -149,8 +202,10 @@ export function exportProject(project, baseUrl) {
   const scenarios = project.scenarios.filter(scenario => scenario.enabled).map(scenario => {
     createPlayback(scenario, 'desktop', baseUrl)
     const trigger = { ...scenario.trigger }
-    if (trigger.pageUrl) trigger.pageUrl = canonicalUrl(trigger.pageUrl, baseUrl)
-    if (trigger.type === 'click' && !trigger.selector.trim()) throw new Error('Выберите кнопку запуска для сценария «' + scenario.name + '».')
+    const errors = triggerErrors(trigger, baseUrl)
+    if (Object.keys(errors).length) throw new Error(Object.values(errors)[0])
+    if (!triggerIsReady(scenario, baseUrl)) throw new Error('Сохраните настройки запуска сценария «' + scenario.name + '».')
+    trigger.pageUrl = trigger.type !== 'manual' && triggerPageScope(trigger) === 'page' ? canonicalUrl(trigger.pageUrl, baseUrl) : ''
     return {
       id: scenario.id, name: scenario.name, color: scenario.color, trigger,
       steps: scenario.steps.map(step => ({
