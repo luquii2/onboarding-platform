@@ -7,5 +7,12 @@ dist/
 *.local
 .onboarding-backups/
 README-PAGES.md
-docs/
-tests/
+/docs/
+/tests/
+
+__pycache__/
+*.pyc
+venv/
+.venv/
+.ruff_cache/
+.vscode/
