@@ -10,7 +10,7 @@ from db import Base
 if TYPE_CHECKING:
     from models.site import Site
 
-"""Черновики конструктора."""
+# Черновики конструктора.
 class ProjectDraft(Base):
     __tablename__ = "project_drafts"
 

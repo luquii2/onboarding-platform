@@ -14,11 +14,11 @@ if TYPE_CHECKING:
     from models.theme import Theme
     from models.user import User
 
-"""Случайный идентификатор сайта."""
+# Случайный идентификатор сайта.
 def generate_site_id() -> str:
     return str(uuid.uuid4())
 
-"""Сайты клиентов."""
+# Сайты клиентов.
 class Site(Base):
     __tablename__ = "sites"
     __table_args__ = (UniqueConstraint("owner_id", "base_url"),)

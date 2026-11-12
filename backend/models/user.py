@@ -9,7 +9,7 @@ from db import Base
 if TYPE_CHECKING:
     from models.site import Site
 
-"""Аккаунты пользователей."""
+# Аккаунты пользователей.
 class User(Base):
     __tablename__ = "users"
 

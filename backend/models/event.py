@@ -6,7 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from db import Base
 
 
-"""События аналитики, присланные виджетом."""
+# События аналитики, присланные виджетом.
 class Event(Base):
     __tablename__ = "events"
     __table_args__ = (UniqueConstraint("site_id", "event_id"),)

@@ -8,7 +8,7 @@ from db import Base
 if TYPE_CHECKING:
     from models.site import Site
 
-"""Темы оформления."""
+# Темы оформления.
 class Theme(Base):
     __tablename__ = "themes"
 

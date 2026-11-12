@@ -5,7 +5,7 @@ from sqlalchemy import pool
 
 from alembic import context
 
-import models  # Загрузка всех моделей
+import models  # noqa: F401
 from core.config import settings
 from db import Base
 

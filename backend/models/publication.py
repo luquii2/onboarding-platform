@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from models.site import Site
 
 
-"""Неизменяемый снимок опубликованных сценариев сайта."""
+# Неизменяемый снимок опубликованных сценариев сайта.
 class Publication(Base):
     __tablename__ = "publications"
     __table_args__ = (UniqueConstraint("site_id", "version"),)
