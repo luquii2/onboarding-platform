@@ -14,6 +14,7 @@ try { initialApi = normalizeApiBase(storedBase || import.meta.env.VITE_API_BASE_
 const apiBase = ref(initialApi)
 const apiInput = ref(apiBase.value), connectionOpen = ref(false), connectionError = ref(''), healthMessage = ref(''), checkingHealth = ref(false)
 const token = ref(null), user = ref(null), previousUserId = ref(null), booting = ref(true)
+const sessionError = ref(''), accountError = ref('')
 const route = ref(location.hash.slice(1) || '/login'), mode = ref('auth'), authMode = ref('login')
 const working = ref(false), authError = ref(''), authFields = ref([]), authNotice = ref('')
 const credentials = ref({ companyName: '', email: '', password: '', acceptTerms: false })
@@ -26,7 +27,8 @@ const api = computed(() => createApi({ baseUrl: apiBase.value, getToken: () => t
   if (token.value !== expiredToken) return
   credentials.value.email = user.value?.email || credentials.value.email
   previousUserId.value = user.value?.id ?? previousUserId.value
-  clearSession(); authError.value = 'Сессия истекла. Войдите снова; открытый черновик остаётся в редакторе.'
+  clearSession(); sessionError.value = ''
+  authError.value = editorSite.value ? 'Сессия истекла. Войдите снова; открытый черновик остаётся в редакторе.' : 'Вход завершён или срок действия сессии истёк. Войдите снова.'
   siteDialog.value?.close(); installDialog.value?.close()
   location.hash = '/login'
 } }))
@@ -99,49 +101,55 @@ async function refreshSites() {
   finally { if (currentApi === api.value) loadingSites.value = false }
 }
 
-async function signInResponse(response) {
+async function signInResponse(response, client, ticket, email) {
   const session = authResult(response), before = previousUserId.value ?? user.value?.id
-  token.value = session.token
-  try {
-    const loadedUser = validUser(session.user || await api.value.me())
-    if (loadedUser.email.toLowerCase() !== credentials.value.email.trim().toLowerCase()) throw new ApiError('Сервер вернул другой аккаунт. Проверьте ответ авторизации.')
-    if (before !== undefined && before !== null && before !== loadedUser.id) { editorSite.value = null; editorDocument.value = null }
-    user.value = loadedUser; previousUserId.value = loadedUser.id; storeSession()
-    credentials.value.password = ''; authError.value = ''; authNotice.value = ''
-    location.hash = editorSite.value ? '/sites/' + encodeURIComponent(editorSite.value.id) : '/sites'
-    await handleRoute()
-  } catch (error) { clearSession(); throw error }
+  const loadedUser = validUser(await client.me({ token: session.token }))
+  if (ticket !== authTicket || disposed || client !== api.value) return
+  if (loadedUser.email.toLowerCase() !== email.toLowerCase() || session.user && session.user.id !== loadedUser.id) throw new ApiError('Сервер вернул другой аккаунт. Проверьте ответ авторизации.')
+  if (before !== undefined && before !== null && before !== loadedUser.id) { editorSite.value = null; editorDocument.value = null }
+  token.value = session.token; user.value = loadedUser; previousUserId.value = loadedUser.id; storeSession()
+  credentials.value.password = ''; authError.value = ''; authNotice.value = ''; accountError.value = ''; sessionError.value = ''
+  location.hash = editorSite.value ? '/sites/' + encodeURIComponent(editorSite.value.id) : '/sites'
+  await handleRoute()
 }
 
 async function submitAuth() {
   if (working.value) return
-  const ticket = ++authTicket, registering = isRegister.value
+  const ticket = ++authTicket, registering = isRegister.value, client = api.value
   working.value = true; authError.value = ''; authFields.value = []; authNotice.value = ''
   try {
     const data = { email: credentials.value.email.trim(), password: credentials.value.password }
     if (registering) {
-      const response = await api.value.register({ ...data, companyName: credentials.value.companyName.trim(), acceptTerms: credentials.value.acceptTerms })
+      const response = await client.register({ ...data, companyName: credentials.value.companyName.trim(), acceptTerms: credentials.value.acceptTerms })
       if (ticket !== authTicket || disposed) return
       credentials.value.acceptTerms = false
-      if (response?.accessToken || response?.access_token) await signInResponse(response)
-      else {
-        credentials.value.password = ''; authNotice.value = 'Регистрация принята сервером. Теперь войдите в аккаунт.'
-        location.hash = '/login'; authMode.value = 'login'
-      }
+      await signInResponse(response, client, ticket, data.email)
     } else {
-      const response = await api.value.login(data)
-      if (ticket === authTicket && !disposed) await signInResponse(response)
+      const response = await client.login(data)
+      if (ticket === authTicket && !disposed) await signInResponse(response, client, ticket, data.email)
     }
   } catch (error) { if (ticket === authTicket) { authError.value = error.message; authFields.value = error.fields || [] } }
   finally { if (ticket === authTicket) working.value = false }
 }
 
-async function signOut() {
+async function signOut(allDevices = false) {
+  const client = api.value, currentToken = token.value
+  if (allDevices && !confirm('Выйти из аккаунта на всех устройствах? На каждом устройстве потребуется войти снова.')) return
   if (!await mayLeave()) return
-  working.value = true
-  let notice = ''
-  try { await api.value.logout() } catch (error) { if (error.status !== 401) notice = 'Вы вышли из аккаунта в этой вкладке. Сервер не подтвердил завершение сессии.' }
+  if (client !== api.value || currentToken !== token.value) return
+  const ticket = ++authTicket
+  working.value = true; accountError.value = ''
+  let notice = '', revokedAll = false
+  try { if (allDevices) { await client.logoutAll(); revokedAll = true } else await client.logout() }
+  catch (error) {
+    if (ticket !== authTicket || client !== api.value || disposed) return
+    if (allDevices && error.status !== 401) { accountError.value = 'Не удалось подтвердить выход на всех устройствах. ' + error.message; working.value = false; return }
+    if (allDevices && error.status === 401) notice = 'Вход в этой вкладке завершён. Чтобы выйти на всех устройствах, войдите снова и повторите действие.'
+    if (error.status !== 401) notice = 'Вы вышли из аккаунта в этой вкладке. Сервер не подтвердил завершение сессии.'
+  }
+  if (ticket !== authTicket || client !== api.value || disposed) return
   clearSession(); previousUserId.value = null; editorSite.value = null; editorDocument.value = null
+  if (revokedAll) notice = 'Вы вышли из аккаунта на всех устройствах.'
   working.value = false; authNotice.value = notice; authError.value = ''; location.hash = '/login'
 }
 
@@ -152,13 +160,14 @@ async function configureApi() {
     if (!value) throw new ApiError('Укажите адрес сервера API.')
     if (value === apiBase.value) return
     if (!await mayLeave()) return
-    authTicket++; routeTicket++; working.value = false
+    authTicket++; routeTicket++; working.value = false; booting.value = false; sessionError.value = ''; accountError.value = ''
     clearSession(); previousUserId.value = null; editorSite.value = null; editorDocument.value = null
     credentials.value.password = ''
     apiBase.value = value; apiInput.value = value
     try { localStorage.setItem(API_KEY, value) } catch { /* The entered address remains active in this tab. */ }
     authNotice.value = 'Адрес API сохранён. Войдите в аккаунт этого сервера.'; authError.value = ''; location.hash = '/login'
     connectionOpen.value = false
+    await handleRoute()
   } catch (error) { connectionError.value = error.message }
 }
 
@@ -229,16 +238,37 @@ async function onHashChange() {
   }
   handleRoute()
 }
-onMounted(async () => {
-  window.addEventListener('hashchange', onHashChange)
+async function restoreSession() {
+  const ticket = ++authTicket, client = api.value
+  booting.value = true; sessionError.value = ''
   try {
     const session = JSON.parse(sessionStorage.getItem(SESSION_KEY) || 'null')
     if (session?.apiBase === apiBase.value && typeof session.token === 'string' && session.token) {
-      token.value = session.token; user.value = validUser(await api.value.me()); previousUserId.value = user.value.id
-      if (route.value === '/login') location.hash = '/sites'
+      token.value = session.token
+      const loadedUser = validUser(await client.me({ token: session.token }))
+      if (ticket !== authTicket || disposed || client !== api.value) return
+      user.value = loadedUser; previousUserId.value = loadedUser.id
+      const target = location.hash.slice(1) || '/login'
+      if (['/login', '/register'].includes(target)) location.hash = '/sites'
     }
-  } catch (error) { clearSession(); if (error instanceof ApiError && error.status !== 401) authError.value = error.message }
-  finally { booting.value = false; await handleRoute() }
+  } catch (error) {
+    if (ticket !== authTicket || disposed || client !== api.value) return
+    if (error instanceof SyntaxError || error.status === 401) clearSession()
+    else { sessionError.value = error.message; mode.value = 'session-error' }
+  } finally {
+    if (ticket === authTicket && !disposed) {
+      booting.value = false
+      if (!sessionError.value) await handleRoute()
+    }
+  }
+}
+async function forgetSession() {
+  authTicket++; clearSession(); sessionError.value = ''; accountError.value = ''; authError.value = ''; booting.value = false
+  location.hash = '/login'; await handleRoute()
+}
+onMounted(async () => {
+  window.addEventListener('hashchange', onHashChange)
+  await restoreSession()
 })
 onBeforeUnmount(() => { disposed = true; routeTicket++; authTicket++; window.removeEventListener('hashchange', onHashChange) })
 </script>
@@ -249,11 +279,14 @@ onBeforeUnmount(() => { disposed = true; routeTicket++; authTicket++; window.rem
       <a class="platform-brand" href="#/sites" @click.prevent="go(user ? '/sites' : '/login')"><span class="brand-mark">о</span>Онбординг</a>
       <div class="platform-nav">
         <button class="text-button" :aria-expanded="connectionOpen" @click="connectionOpen = !connectionOpen">Подключение API</button>
-        <span v-if="user" class="account-name">{{ displayName }}</span>
-        <button v-if="user" class="button small" :disabled="working" @click="signOut">Выйти</button>
+        <details v-if="user" class="account-menu">
+          <summary :aria-label="'Аккаунт: ' + displayName"><span class="account-avatar" aria-hidden="true">{{ displayName.slice(0, 1).toUpperCase() }}</span><span class="account-name">{{ displayName }}</span><span aria-hidden="true">⌄</span></summary>
+          <div class="account-menu-actions"><button :disabled="working" @click="signOut()">Выйти</button><button :disabled="working" @click="signOut(true)">Выйти на всех устройствах</button></div>
+        </details>
         <button v-else-if="mode === 'demo'" class="button small" @click="go('/login')">Войти в кабинет</button>
       </div>
     </header>
+    <p v-if="accountError" class="account-error form-error" role="alert">{{ accountError }}</p>
 
     <section v-if="connectionOpen" class="api-settings panel" aria-label="Подключение API">
       <form @submit.prevent="configureApi">
@@ -265,6 +298,10 @@ onBeforeUnmount(() => { disposed = true; routeTicket++; authTicket++; window.rem
     </section>
 
     <main v-if="booting || mode === 'loading'" class="platform-content"><p class="loading-state" role="status">{{ booting ? 'Проверяем сессию…' : 'Загружаем сайт и проект с сервера…' }}</p></main>
+
+    <main v-else-if="mode === 'session-error'" class="platform-content">
+      <section class="session-recovery panel" aria-labelledby="session-error-title"><h1 id="session-error-title">Не удалось проверить вход</h1><p class="form-error" role="alert">{{ sessionError }}</p><p class="hint">Сохранённый вход остаётся в этой вкладке. Повторите проверку, когда сервер станет доступен.</p><div class="inline-actions"><button class="button primary" @click="restoreSession">Повторить проверку</button><button class="button" @click="forgetSession">Войти заново</button><button class="text-button" @click="go('/demo')">Открыть демоконструктор</button></div></section>
+    </main>
 
     <main v-else-if="mode === 'auth'" class="auth-layout">
       <section class="auth-story"><p class="eyebrow">ИНТЕРАКТИВНОЕ ОБУЧЕНИЕ</p><h1>Помогите пользователям<br>сделать первый шаг.</h1><p>Добавьте сайт, создайте сценарий и проведите посетителя по нужным действиям.</p><div class="story-flow"><span>01 · Сайт</span><span>02 · Сценарий</span><span>03 · Обучение</span></div><button class="button" @click="go('/demo')">Открыть демоконструктор</button><p class="hint">Демоконструктор доступен без аккаунта. Его черновик сохраняется только в этом браузере.</p></section>

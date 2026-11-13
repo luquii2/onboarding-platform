@@ -61,7 +61,7 @@ alembic upgrade head
 
 | Код | `code` | Когда |
 | --- | --- | --- |
-| 409 | `EMAIL_TAKEN` | E-mail уже зарегистрирован |
+| 409 | `EMAIL_ALREADY_EXISTS` | E-mail уже зарегистрирован |
 | 401 | `INVALID_CREDENTIALS` | Неверный e-mail или пароль |
 | 401 | `NOT_AUTHENTICATED` | Нет токена |
 | 401 | `INVALID_TOKEN` | Токен поддельный, истёк или отозван |

@@ -5,6 +5,15 @@
 .platform-nav, .inline-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
 .platform-nav .text-button, .editor-heading .text-button, .demo-heading .text-button { font-size: 12px; }
 .account-name { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #788297; }
+.account-menu { position: relative; }
+.account-menu > summary { display: flex; align-items: center; gap: 10px; list-style: none; cursor: pointer; padding: 7px 10px; border: 1px solid #e0e5ef; border-radius: 8px; }
+.account-menu > summary::-webkit-details-marker { display: none; }
+.account-avatar { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 7px; background: #eeecff; color: #6961bd; font-size: 12px; font-weight: 600; }
+.account-menu-actions { position: absolute; top: calc(100% + 8px); right: 0; z-index: 20; padding: 6px; min-width: 220px; background: #fff; border: 1px solid #e0e5ef; border-radius: 9px; box-shadow: 0 8px 30px #17254718; }
+.account-menu-actions button { display: block; width: 100%; padding: 10px 12px; text-align: left; border: 0; border-radius: 5px; background: transparent; color: #515c73; font-size: 12px; }
+.account-menu-actions button:hover:not(:disabled) { background: #f4f5ff; }
+.account-error { max-width: 1272px; margin: 16px auto; }
+.session-recovery { max-width: 720px; margin: 30px auto; padding: 28px; }
 .platform-content { max-width: 1320px; padding: 44px 24px; margin: 0 auto; }
 .api-settings { max-width: 900px; margin: 20px auto; }
 .api-settings .field { margin-top: 0; }
