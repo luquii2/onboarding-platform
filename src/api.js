@@ -53,6 +53,8 @@ function responseError(status, data) {
     EMAIL_ALREADY_EXISTS: 'Этот email уже зарегистрирован. Войдите в аккаунт.',
     SITE_ALREADY_EXISTS: 'Этот сайт уже добавлен в ваш аккаунт.',
     INVALID_CREDENTIALS: 'Неверный email или пароль.',
+    NOT_AUTHENTICATED: 'Войдите в аккаунт, чтобы продолжить.',
+    INVALID_TOKEN: 'Вход завершён или срок действия сессии истёк. Войдите снова.',
   }
   const fallback = ({ 401: 'Сессия истекла. Войдите снова.', 403: 'Недостаточно прав для этого действия.', 404: 'Данные не найдены или недоступны вашему аккаунту.', 409: 'Данные изменились. Обновите их перед повторной попыткой.', 413: 'Проект слишком большой для отправки.', 422: 'Проверьте заполнение полей.', 429: 'Слишком много запросов. Повторите немного позже.' })[status] || 'Сервер не смог выполнить запрос. Повторите позже.'
   const supplied = typeof detail?.message === 'string' && /[а-яё]/i.test(detail.message) ? detail.message.slice(0, 400) : ''
@@ -62,7 +64,7 @@ function responseError(status, data) {
 export function authResult(data) {
   const token = data?.accessToken ?? data?.access_token
   if (typeof token !== 'string' || !token || /\s/.test(token) || token.length > 16000) {
-    throw new ApiError('API не выдал токен входа. Текущая заглушка авторизации должна быть заменена рабочим входом с JWT.', { code: 'AUTH_TOKEN_MISSING' })
+    throw new ApiError('Сервер не выдал токен входа. Проверьте адрес API и версию сервера.', { code: 'AUTH_TOKEN_MISSING' })
   }
   const type = data.tokenType ?? data.token_type ?? 'bearer'
   if (String(type).toLowerCase() !== 'bearer') throw new ApiError('Сервер вернул неподдерживаемый способ авторизации.', { code: 'AUTH_RESPONSE_INVALID' })
@@ -81,9 +83,9 @@ export function validateProjectResponse(data, siteId) {
 
 export function createApi({ baseUrl, getToken = () => null, onUnauthorized = () => {}, fetcher = (...args) => fetch(...args), timeout = 12000 }) {
   const base = normalizeApiBase(baseUrl)
-  async function request(path, { method = 'GET', body, auth = true, signal, idempotencyKey } = {}) {
+  async function request(path, { method = 'GET', body, auth = true, signal, idempotencyKey, token: requestToken } = {}) {
     if (!base) throw new ApiError('Сначала укажите адрес сервера в разделе «Подключение API».', { code: 'API_NOT_CONFIGURED' })
-    const token = auth ? getToken() : null
+    const token = auth ? requestToken ?? getToken() : null
     if (auth && !token) throw new ApiError('Войдите в аккаунт, чтобы работать с сервером.', { status: 401, code: 'AUTH_REQUIRED' })
     const controller = new AbortController(), abort = () => controller.abort()
     signal?.addEventListener('abort', abort, { once: true })
@@ -117,7 +119,9 @@ export function createApi({ baseUrl, getToken = () => null, onUnauthorized = () 
     base, request,
     register: body => request('/auth/register', { method: 'POST', body, auth: false }),
     login: body => request('/auth/login', { method: 'POST', body, auth: false }),
-    me: () => request('/auth/me'), logout: () => request('/auth/logout', { method: 'POST' }),
+    me: options => request('/auth/me', options),
+    logout: () => request('/auth/logout', { method: 'POST' }),
+    logoutAll: () => request('/auth/logout-all', { method: 'POST' }),
     async sites() {
       const data = await request('/sites'), items = Array.isArray(data) ? data : data?.items
       if (!Array.isArray(items)) throw new ApiError('Сервер вернул некорректный список сайтов.', { code: 'SITES_RESPONSE_INVALID' })
