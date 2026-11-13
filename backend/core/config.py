@@ -25,5 +25,7 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 1440
     # алгоритм подписи токенов
     jwt_algorithm: str = "HS256"
+    # сколько часов после последнего сигнала виджет считается работающим
+    widget_active_hours: int = 24
 
 settings = Settings()

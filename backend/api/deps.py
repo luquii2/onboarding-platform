@@ -3,12 +3,13 @@ from typing import Annotated
 import jwt
 from fastapi import Depends, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from api.errors import api_error
 from core.security import decode_access_token
 from db import get_db
-from models import User
+from models import User, Site
 
 # сессия базы данных для эндпоинтов
 DbSession = Annotated[Session, Depends(get_db)]
@@ -44,3 +45,16 @@ def get_current_user(
 
 # текущий пользователь для эндпоинтов
 CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+# сайт из адреса запроса, принадлежащий текущему пользователю;
+# чужой или несуществующий сайт — одинаковая ошибка 404
+def get_owned_site(site_id: str, user: CurrentUser, db: DbSession) -> Site:
+    site = db.scalar(select(Site).where(Site.id == site_id, Site.owner_id == user.id))
+    if site is None:
+        raise api_error(status.HTTP_404_NOT_FOUND, "SITE_NOT_FOUND", "Сайт не найден")
+    return site
+
+
+# сайт текущего пользователя для эндпоинтов с {site_id} в адресе
+OwnedSite = Annotated[Site, Depends(get_owned_site)]
