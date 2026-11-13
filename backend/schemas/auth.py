@@ -26,3 +26,8 @@ class UserResponse(CamelModel):
     email: str
     company_name: str
     created_at: datetime
+
+class TokenResponse(CamelModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse
