@@ -42,6 +42,7 @@ export function normalizeStep(value, baseUrl, number = 1) {
   const legacyMobileActions = typeof value.menuToggleSelector === 'string' && value.menuToggleSelector
     ? [{ kind: 'click', selector: value.menuToggleSelector, label: 'Открыть элемент' }] : []
   return {
+    ...value,
     id: text(value.id, 100) || crypto.randomUUID(),
     title: typeof value.title === 'string' ? text(value.title, 120) : 'Шаг ' + number,
     text: text(value.text, 2000), pageUrl, selector: text(value.selector, 2000),
@@ -106,7 +107,7 @@ export function readProject(value, baseUrl) {
     ? value.scenarios.slice(0, 20) : [{ ...readDraft(value, baseUrl), name: 'Основной сценарий' }]
   const seen = new Set()
   const scenarios = source.map((item, index) => {
-    const scenario = createScenario(text(item?.name, 120) || 'Сценарий ' + (index + 1))
+    const scenario = { ...(item && typeof item === 'object' ? item : {}), ...createScenario(text(item?.name, 120) || 'Сценарий ' + (index + 1)) }
     scenario.id = text(item?.id, 100) || scenario.id
     if (seen.has(scenario.id)) scenario.id = crypto.randomUUID()
     seen.add(scenario.id)
@@ -117,7 +118,7 @@ export function readProject(value, baseUrl) {
       let pageUrl = ''
       try { if (trigger.pageUrl) pageUrl = canonicalUrl(trigger.pageUrl, baseUrl) } catch { /* A new page can be selected in the editor. */ }
       scenario.trigger = {
-        ...scenario.trigger, type: trigger.type, pageUrl, selector: text(trigger.selector, 2000), label: text(trigger.label, 100),
+        ...trigger, ...scenario.trigger, type: trigger.type, pageUrl, selector: text(trigger.selector, 2000), label: text(trigger.label, 100),
         pageScope: ['all', 'page'].includes(trigger.pageScope) ? trigger.pageScope : trigger.pageUrl ? 'page' : 'all',
         title: typeof trigger.title === 'string' ? text(trigger.title, 120) : scenario.trigger.title,
         text: typeof trigger.text === 'string' ? text(trigger.text, 500) : scenario.trigger.text,
@@ -136,6 +137,7 @@ export function readProject(value, baseUrl) {
     } catch { /* Only pages of this site can be selected. */ }
   }
   return {
+    ...(value && typeof value === 'object' ? value : {}),
     schema: 4, siteId: text(value?.siteId, 100) || crypto.randomUUID(), scenarios, pages: [...pages.values()],
     activeScenarioId: scenarios.some(item => item.id === value?.activeScenarioId) ? value.activeScenarioId : scenarios[0].id,
   }
@@ -172,6 +174,17 @@ export function triggerKey(trigger) {
 
 export function triggerIsReady(scenario, baseUrl) {
   return !Object.keys(triggerErrors(scenario.trigger, baseUrl)).length && scenario.triggerConfirmation === triggerKey(scenario.trigger)
+}
+
+export function runtimeSignature(config, baseUrl) {
+  if (!Array.isArray(config?.scenarios)) throw new Error('В ответе API нет списка сценариев.')
+  return JSON.stringify(config.scenarios.map(scenario => ({
+    id: scenario.id, name: scenario.name, color: scenario.color, trigger: triggerKey(scenario.trigger),
+    steps: scenario.steps.map(step => ({
+      id: step.id, title: step.title, text: step.text, pageUrl: canonicalUrl(step.pageUrl, baseUrl),
+      variants: { desktop: configFor(step, 'desktop'), mobile: configFor(step, 'mobile') },
+    })),
+  })))
 }
 
 export function confirmTrigger(scenario, baseUrl) {

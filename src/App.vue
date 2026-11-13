@@ -1,11 +1,20 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import PreviewFrame from './components/PreviewFrame.vue'
-import { DEVICES, applyTarget, canonicalUrl, configFor, createStep, createScenario, createPlayback, exportProject, isDraft, normalizeActions, readProject, validationKey, confirmTrigger, triggerErrors, triggerIsReady } from './model.js'
+import { createProjectPersistence } from './projectPersistence.js'
+import { DEVICES, applyTarget, canonicalUrl, configFor, createStep, createScenario, createPlayback, exportProject, isDraft, normalizeActions, readProject, validationKey, confirmTrigger, triggerErrors, triggerIsReady, runtimeSignature } from './model.js'
 import './styles.css'
 
-const SITE = import.meta.env.VITE_DEMO_SITE_URL || 'http://localhost:4174/'
+const props = defineProps({ site: Object, initialDocument: Object, api: Object })
+const cloud = !!props.site
+const SITE = props.site?.baseUrl || import.meta.env.VITE_DEMO_SITE_URL || 'http://localhost:4174/'
 const STORAGE = 'onboarding-prototype:' + SITE
+const serverState = ref({ state: 'saved', error: '', revision: props.initialDocument?.revision ?? 0, updatedAt: props.initialDocument?.updatedAt, dirty: false, busy: false })
+const publishing = ref(false), publishedVersion = ref(props.site?.publishedVersion ?? 0)
+let publishAttempt = null
+const editingLocked = computed(() => playing.value || serverState.value.state === 'loading' || publishing.value)
+const saveLabel = computed(() => ({ saved: 'Сохранено на сервере', unsaved: 'Есть несохранённые изменения', saving: 'Сохраняем на сервере…', loading: 'Загружаем с сервера…', conflict: 'Конфликт версий', error: 'Не удалось сохранить' })[serverState.value.state])
+let persistence
 const mainFrame = ref(null), desktopValidator = ref(null), mobileValidator = ref(null)
 const mainReady = ref(false), frameUrl = ref(SITE), frameEpoch = ref(0), currentPage = ref(SITE)
 const project = ref(readProject(null, SITE))
@@ -40,7 +49,7 @@ const waitingMessage = computed(() => {
   if (trigger.type === 'manual') return 'Ожидаем вызова Onboarding.start() из кода сайта.'
   return destination + (elsewhere ? 'Там появится приглашение. ' : 'Приглашение появится справа внизу сайта. ') + 'Нажмите «' + trigger.buttonText + '», чтобы начать обучение.'
 })
-const configUrl = ref(new URL('onboarding.json', SITE).href)
+const configUrl = ref(cloud ? new URL(props.api.configUrl(props.site.id), location.href).href : new URL('onboarding.json', SITE).href)
 const installScript = computed(() => {
   const attr = value => String(value).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;')
   const source = new URL(import.meta.env.BASE_URL + 'widget.js', location.origin).href
@@ -48,16 +57,83 @@ const installScript = computed(() => {
 })
 
 try {
-  project.value = readProject(JSON.parse(localStorage.getItem(STORAGE) || 'null'), SITE)
+  project.value = cloud ? normalizeServerProject(props.initialDocument.project) : readProject(JSON.parse(localStorage.getItem(STORAGE) || 'null'), SITE)
   selectedId.value = steps.value.find(step => step.pageUrl === SITE)?.id ?? null
 } catch { status.value = 'Черновик не удалось прочитать. Можно создать новый.' }
 
+function normalizeServerProject(value) { return readProject({ ...value, siteId: props.site.id }, SITE) }
+if (cloud) {
+  persistence = createProjectPersistence({
+    api: props.api, siteId: props.site.id,
+    initialDocument: { ...props.initialDocument, project: project.value },
+    normalize: normalizeServerProject,
+    onState: value => { serverState.value = value },
+    onReplace: value => { project.value = value },
+  })
+}
+
 watch(project, () => {
+  if (cloud) { persistence.update(project.value); return }
   try { localStorage.setItem(STORAGE, JSON.stringify(project.value)) }
   catch { status.value = 'Браузер не разрешил сохранить черновик.' }
 }, { deep: true, immediate: true })
+
+async function saveToServer() {
+  try { await persistence.save(); status.value = 'Проект сохранён на сервере. Ревизия ' + serverState.value.revision + '.'; return true }
+  catch (error) { status.value = error.message; return false }
+}
+async function reloadFromServer() {
+  if (persistence.isDirty() && !confirm('Загрузить проект с сервера и заменить несохранённые изменения? Перед этим можно скачать копию черновика.')) return
+  resetPlayback(); disableTriggers(); interaction.value = null; sequence++; selectedId.value = null; resetSettingsPanel()
+  try {
+    await persistence.reload(); await nextTick()
+    selectedId.value = steps.value.find(step => step.pageUrl === currentPage.value)?.id ?? null
+    await highlightSelected()
+    status.value = 'Проект загружен с сервера. Ревизия ' + serverState.value.revision + '.'
+  } catch (error) { status.value = error.message }
+}
+async function mayLeave() {
+  if (publishing.value) { status.value = 'Дождитесь завершения публикации.'; return false }
+  if (!cloud || !persistence.isDirty() && !serverState.value.busy) return true
+  if (await saveToServer()) return true
+  return confirm('Не удалось сохранить проект на сервере. Выйти из редактора и потерять несохранённые изменения?')
+}
+function downloadDraft() {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(project.value, null, 2)], { type: 'application/json' }))
+  const link = document.createElement('a'); link.href = url; link.download = 'onboarding-project.json'; link.click()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+async function checkServerConfig() {
+  try {
+    const config = await props.api.publicConfig(props.site.id)
+    if (config.siteId !== props.site.id || config.origin && config.origin !== new URL(SITE).origin || !Array.isArray(config.scenarios)) throw new Error('Публичная конфигурация не соответствует выбранному сайту.')
+    status.value = 'Конфигурация получена с сервера: версия ' + config.version + ', сценариев — ' + config.scenarios.length + '.'
+  } catch (error) { status.value = error.message }
+}
+async function publishProject() {
+  if (publishing.value) return
+  publishing.value = true
+  try {
+    const expected = exportProject(project.value, SITE)
+    if (new Blob([JSON.stringify(expected, null, 2)]).size > 500000) throw new Error('Конфигурация превышает 500 КБ. Сократите содержимое сценариев.')
+    if (!await saveToServer()) return
+    const revision = serverState.value.revision
+    if (publishAttempt?.revision !== revision) publishAttempt = { revision, key: crypto.randomUUID() }
+    const result = await props.api.publish(props.site.id, revision, publishAttempt.key)
+    if (!Number.isInteger(result?.version) || result.version < 1 || result.projectRevision !== revision) throw new Error('Сервер вернул некорректный ответ публикации.')
+    const live = await props.api.publicConfig(props.site.id, result.version)
+    if (live.schema !== 1 || live.siteId !== props.site.id || live.version !== result.version || live.origin && live.origin !== new URL(SITE).origin || runtimeSignature(live, SITE) !== runtimeSignature(expected, SITE)) throw new Error('Опубликованный тур не совпадает с отправленным. Проверьте сохранение публикации и публичный endpoint на бэкенде.')
+    publishedVersion.value = result.version; publishAttempt = null
+    status.value = 'Сценарии опубликованы. Версия ' + live.version + ' доступна виджету с сервера.'
+    notify('Сценарии опубликованы', 'Версия ' + live.version + ' доступна виджету по адресу API.')
+  } catch (error) { status.value = error.message }
+  finally { publishing.value = false }
+}
+function beforeUnload(event) { if (cloud && (persistence.isDirty() || publishing.value)) { event.preventDefault(); event.returnValue = '' } }
+if (cloud) window.addEventListener('beforeunload', beforeUnload)
+defineExpose({ mayLeave })
 watch(() => project.value.scenarios, () => {
-  if (armed.value && !playing.value) {
+  if (armed.value && !playing.value && JSON.stringify(scenario.value) !== JSON.stringify(launchSession.value.scenario)) {
     disableTriggers()
     status.value = 'Настройки изменились. Нажмите «Запустить тур» снова, чтобы применить их.'
   }
@@ -475,7 +551,7 @@ function downloadConfig() {
 }
 
 watch(device, async () => { await nextTick(); if (!interaction.value && !playing.value) highlightSelected() })
-onBeforeUnmount(() => { disposed = true; clearTimeout(validationTimer); clearNotification(); sequence++; highlightVersion++ })
+onBeforeUnmount(() => { disposed = true; persistence?.dispose(); window.removeEventListener('beforeunload', beforeUnload); clearTimeout(validationTimer); clearNotification(); sequence++; highlightVersion++ })
 </script>
 
 <template>
@@ -484,9 +560,16 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(validationTimer); clearNot
       <div><p class="eyebrow">ИНТЕРАКТИВНЫЙ ОНБОРДИНГ</p><h1>Конструктор сценариев</h1></div>
       <span class="connection" :class="{ online: mainReady }">{{ mainReady ? 'Сайт подключен' : 'Подключаем сайт' }}</span>
       <button v-if="playing || armed" class="button" @click="stopPreview">Остановить тур</button>
-      <button v-else class="button primary" :disabled="!mainReady || !steps.length || !!interaction" @click="startTour">Запустить тур</button>
+      <button v-else class="button primary" :disabled="!mainReady || !steps.length || !!interaction || editingLocked" @click="startTour">Запустить тур</button>
     </header>
     <p class="status-bar" :role="notification ? undefined : 'status'">{{ status }}</p>
+    <section v-if="cloud" class="cloud-save-panel panel" aria-label="Сохранение проекта на сервере">
+      <div class="save-copy"><strong role="status">{{ saveLabel }}</strong><p>Ревизия {{ serverState.revision }} · автосохранение после изменений</p></div>
+      <button class="button primary" :disabled="editingLocked || serverState.busy || !serverState.dirty || serverState.state === 'conflict'" @click="saveToServer">Сохранить на сервере</button>
+      <button class="button" :disabled="editingLocked || serverState.busy || !!interaction" @click="reloadFromServer">Загрузить с сервера</button>
+      <button class="button subtle" @click="downloadDraft">Скачать черновик</button>
+      <p v-if="serverState.error" class="form-error" role="alert">{{ serverState.error }}</p>
+    </section>
     <div v-if="notification" class="launch-notice" role="status" aria-live="polite">
       <button class="notice-close" aria-label="Закрыть уведомление" @click="clearNotification">×</button>
       <strong>{{ notification.title }}</strong><p>{{ notification.text }}</p>
@@ -494,10 +577,10 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(validationTimer); clearNot
 
     <section class="panel scenarios-panel" aria-label="Сценарии сайта">
       <div class="scenario-toolbar">
-        <label class="field scenario-select">Сценарий<select :value="scenario.id" :disabled="playing || !!interaction" @change="chooseScenario"><option v-for="item in project.scenarios" :key="item.id" :value="item.id">{{ item.name }} · {{ item.steps.length }} шагов</option></select></label>
-        <button class="button" :disabled="playing || !!interaction || project.scenarios.length >= 20" @click="addScenario">+ Новый сценарий</button>
-        <button class="button subtle" :disabled="playing || !!interaction || project.scenarios.length < 2" @click="deleteScenario">Удалить сценарий</button>
-        <label class="enabled-field"><input v-model="scenario.enabled" type="checkbox" :disabled="playing || !!interaction"> Включён на сайте</label>
+        <label class="field scenario-select">Сценарий<select :value="scenario.id" :disabled="editingLocked || !!interaction" @change="chooseScenario"><option v-for="item in project.scenarios" :key="item.id" :value="item.id">{{ item.name }} · {{ item.steps.length }} шагов</option></select></label>
+        <button class="button" :disabled="editingLocked || !!interaction || project.scenarios.length >= 20" @click="addScenario">+ Новый сценарий</button>
+        <button class="button subtle" :disabled="editingLocked || !!interaction || project.scenarios.length < 2" @click="deleteScenario">Удалить сценарий</button>
+        <label class="enabled-field"><input v-model="scenario.enabled" type="checkbox" :disabled="editingLocked || !!interaction"> Включён на сайте</label>
       </div>
       <details ref="settingsDetails" class="launch-settings" :open="settingsOpen" @toggle="settingsOpen = $event.target.open">
         <summary><span>Настройки запуска</span><span class="setup-badge" :class="{ ready: launchReady }">{{ launchReady ? 'Сохранено' : scenario.triggerConfirmation ? 'Есть изменения' : 'Обязательно' }}</span></summary>
@@ -505,9 +588,9 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(validationTimer); clearNot
         <p v-if="settingsMessage" class="settings-error" role="alert">{{ settingsMessage }}</p>
         <div class="scenario-settings">
         <div>
-          <label class="field">Название сценария<input v-model="scenario.name" maxlength="120" :disabled="playing || !!interaction"></label>
-          <label class="field">Способ запуска<select v-model="scenario.trigger.type" :disabled="playing || !!interaction"><option value="offer">Приглашение справа внизу</option><option value="click">Клик по элементу сайта</option><option value="manual">Вызов из JavaScript</option></select></label>
-          <fieldset v-if="scenario.trigger.type !== 'manual'" class="page-scope" :disabled="playing || !!interaction">
+          <label class="field">Название сценария<input v-model="scenario.name" maxlength="120" :disabled="editingLocked || !!interaction"></label>
+          <label class="field">Способ запуска<select v-model="scenario.trigger.type" :disabled="editingLocked || !!interaction"><option value="offer">Приглашение справа внизу</option><option value="click">Клик по элементу сайта</option><option value="manual">Вызов из JavaScript</option></select></label>
+          <fieldset v-if="scenario.trigger.type !== 'manual'" class="page-scope" :disabled="editingLocked || !!interaction">
             <legend>{{ scenario.trigger.type === 'offer' ? 'Где показывать приглашение?' : 'Где ждать нажатия?' }}</legend>
             <label class="page-choice"><input v-model="scenario.trigger.pageScope" type="radio" value="all"> На всех страницах сайта</label>
             <label class="page-choice"><input v-model="scenario.trigger.pageScope" type="radio" value="page"> На выбранной странице</label>
@@ -519,18 +602,18 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(validationTimer); clearNot
             </div>
           </fieldset>
           <div v-if="scenario.trigger.type === 'click'">
-            <button class="button" :disabled="!mainReady || playing || !!interaction" :aria-invalid="!!configurationErrors.selector" @click="pickTrigger">Выбрать элемент запуска</button>
+            <button class="button" :disabled="!mainReady || editingLocked || !!interaction" :aria-invalid="!!configurationErrors.selector" @click="pickTrigger">Выбрать элемент запуска</button>
             <p class="hint">{{ scenario.trigger.selector ? 'Выбрано: ' + (scenario.trigger.label || 'элемент сайта') : 'Нажмите кнопку выше, затем выберите нужный элемент в окне сайта.' }}</p>
             <p v-if="configurationErrors.selector" class="field-error">{{ configurationErrors.selector }}</p>
           </div>
           <p v-if="scenario.trigger.type === 'manual'" class="hint">Вызовите для этого сценария:<code class="code-block">window.Onboarding.start("{{ scenario.id }}")</code></p>
         </div>
         <div v-if="scenario.trigger.type === 'offer'" class="offer-settings">
-          <label class="field">Заголовок приглашения <span aria-hidden="true">*</span><input v-model="scenario.trigger.title" aria-label="Заголовок приглашения" required maxlength="120" :disabled="playing || !!interaction" :aria-invalid="!!configurationErrors.title" :aria-describedby="configurationErrors.title ? 'launch-title-error' : undefined"></label>
+          <label class="field">Заголовок приглашения <span aria-hidden="true">*</span><input v-model="scenario.trigger.title" aria-label="Заголовок приглашения" required maxlength="120" :disabled="editingLocked || !!interaction" :aria-invalid="!!configurationErrors.title" :aria-describedby="configurationErrors.title ? 'launch-title-error' : undefined"></label>
           <p v-if="configurationErrors.title" id="launch-title-error" class="field-error">{{ configurationErrors.title }}</p>
-          <label class="field">Текст приглашения <span aria-hidden="true">*</span><textarea v-model="scenario.trigger.text" aria-label="Текст приглашения" required rows="2" maxlength="500" :disabled="playing || !!interaction" :aria-invalid="!!configurationErrors.text" :aria-describedby="configurationErrors.text ? 'launch-text-error' : undefined" /></label>
+          <label class="field">Текст приглашения <span aria-hidden="true">*</span><textarea v-model="scenario.trigger.text" aria-label="Текст приглашения" required rows="2" maxlength="500" :disabled="editingLocked || !!interaction" :aria-invalid="!!configurationErrors.text" :aria-describedby="configurationErrors.text ? 'launch-text-error' : undefined" /></label>
           <p v-if="configurationErrors.text" id="launch-text-error" class="field-error">{{ configurationErrors.text }}</p>
-          <label class="field">Текст кнопки <span aria-hidden="true">*</span><input v-model="scenario.trigger.buttonText" aria-label="Текст кнопки" required maxlength="80" :disabled="playing || !!interaction" :aria-invalid="!!configurationErrors.buttonText" :aria-describedby="configurationErrors.buttonText ? 'launch-button-error' : undefined"></label>
+          <label class="field">Текст кнопки <span aria-hidden="true">*</span><input v-model="scenario.trigger.buttonText" aria-label="Текст кнопки" required maxlength="80" :disabled="editingLocked || !!interaction" :aria-invalid="!!configurationErrors.buttonText" :aria-describedby="configurationErrors.buttonText ? 'launch-button-error' : undefined"></label>
           <p v-if="configurationErrors.buttonText" id="launch-button-error" class="field-error">{{ configurationErrors.buttonText }}</p>
         </div>
         <div class="scenario-help">
@@ -541,32 +624,36 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(validationTimer); clearNot
           <p class="hint">Запускается выбранный сценарий. Его шаги могут вести по разным страницам сайта.</p>
         </div>
         </div>
-        <div class="launch-actions"><button class="button primary" data-testid="save-launch" :disabled="playing || !!interaction" @click="saveLaunchSettings">Сохранить настройки запуска</button><span v-if="launchReady" class="hint">Настройки сохранены</span></div>
+        <div class="launch-actions"><button class="button primary" data-testid="save-launch" :disabled="editingLocked || !!interaction" @click="saveLaunchSettings">Сохранить настройки запуска</button><span v-if="launchReady" class="hint">Настройки сохранены</span></div>
       </details>
       <div v-if="interaction?.kind === 'trigger'" class="interaction-card"><strong>Выберите элемент запуска в окне сайта</strong><p>Он будет запускать только сценарий «{{ scenario.name }}».</p><button class="button" @click="cancelInteraction">Отменить настройку</button></div>
       <details class="connection-details">
         <summary>Подключение сайта и экспорт</summary>
-        <p>В прототипе настройки сохраняются в этом браузере. Чтобы применить их на сайте, разместите файл <code>onboarding.json</code> и добавьте скрипт на все страницы. После изменений обновляйте файл конфигурации.</p>
-        <label class="field">Адрес файла конфигурации<input v-model="configUrl" type="url"></label>
+        <p v-if="cloud">Черновик сохраняется на сервере. Виджет получает опубликованные сценарии по адресу API ниже. Установите скрипт на все страницы, участвующие в обучении.</p>
+        <p v-else>В деморежиме настройки сохраняются в этом браузере. Для ручного подключения разместите <code>onboarding.json</code> на сайте и добавьте скрипт на все страницы.</p>
+        <label class="field">Адрес конфигурации виджета<input v-model="configUrl" type="url" :readonly="cloud"></label>
         <pre class="code-block">{{ installScript }}</pre>
-        <button class="button" :disabled="playing || !!interaction" @click="downloadConfig">Скачать onboarding.json</button>
+        <button v-if="cloud" class="button primary" :disabled="editingLocked || serverState.busy || !!interaction" @click="publishProject">Опубликовать сценарии</button>
+        <button v-if="cloud" class="button" @click="checkServerConfig">Проверить тур с сервера</button>
+        <p v-if="cloud" class="hint">Опубликованная версия: {{ publishedVersion || 'ещё нет' }}. Сохранение черновика и публикация — отдельные действия.</p>
+        <button class="button" :disabled="editingLocked || !!interaction" @click="downloadConfig">Скачать onboarding.json</button>
       </details>
     </section>
 
     <div class="workspace">
       <aside class="panel steps-panel">
         <div class="panel-title"><h2>Шаги</h2><span class="count">{{ steps.length }}</span></div>
-        <button class="button add-step" :disabled="!mainReady || !!interaction || playing || steps.length >= 50" @click="addStep">+ Выбрать элемент</button>
+        <button class="button add-step" :disabled="!mainReady || !!interaction || editingLocked || steps.length >= 50" @click="addStep">+ Выбрать элемент</button>
         <p v-if="!steps.length" class="empty-hint">Добавьте шаг. Он сразу появится здесь, а затем можно выбрать его цель на сайте.</p>
         <ol class="step-list">
           <li v-for="(step, index) in steps" :key="step.id" class="step-item" :class="{ active: selectedId === step.id }" :data-step-id="step.id">
-            <button class="step-select" :disabled="playing || !!interaction" @click="selectStep(step)">
+            <button class="step-select" :disabled="editingLocked || !!interaction" @click="selectStep(step)">
               <span class="step-number">{{ index + 1 }}</span><span class="step-copy"><strong>{{ step.title || 'Без заголовка' }}</strong><small>{{ isDraft(step) ? 'Черновик · выберите элемент' : pageName(step.pageUrl) }}</small></span>
             </button>
             <div class="step-actions">
-              <button :disabled="index === 0 || !!interaction || playing" aria-label="Переместить шаг вверх" @click="moveStep(step.id, -1)">↑</button>
-              <button :disabled="index === steps.length - 1 || !!interaction || playing" aria-label="Переместить шаг вниз" @click="moveStep(step.id, 1)">↓</button>
-              <button :disabled="playing" @click="deleteStep(step.id)">Удалить</button>
+              <button :disabled="index === 0 || !!interaction || editingLocked" aria-label="Переместить шаг вверх" @click="moveStep(step.id, -1)">↑</button>
+              <button :disabled="index === steps.length - 1 || !!interaction || editingLocked" aria-label="Переместить шаг вниз" @click="moveStep(step.id, 1)">↓</button>
+              <button :disabled="editingLocked" @click="deleteStep(step.id)">Удалить</button>
             </div>
           </li>
         </ol>
@@ -575,7 +662,7 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(validationTimer); clearNot
       <section class="panel preview-panel" aria-label="Предпросмотр сайта">
         <div class="preview-toolbar">
           <div class="device-switch" role="group" aria-label="Версия сайта">
-            <button v-for="(view, kind) in DEVICES" :key="kind" :aria-pressed="device === kind" :disabled="!!interaction || playing" @click="device = kind">{{ view.label }}</button>
+            <button v-for="(view, kind) in DEVICES" :key="kind" :aria-pressed="device === kind" :disabled="!!interaction || editingLocked" @click="device = kind">{{ view.label }}</button>
           </div>
           <a :href="currentPage" target="_blank" rel="noopener">Открыть сайт ↗</a>
         </div>
@@ -589,8 +676,8 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(validationTimer); clearNot
       <aside class="panel inspector">
         <template v-if="selected">
           <div class="panel-title"><h2>Настройка шага</h2><span v-if="isDraft(selected)" class="draft-badge">Черновик</span></div>
-          <label class="field">Заголовок<input v-model="selected.title" maxlength="120" :disabled="playing"></label>
-          <label class="field">Текст подсказки<textarea v-model="selected.text" rows="4" maxlength="2000" :disabled="playing" placeholder="Объясните действие пользователя" /></label>
+          <label class="field">Заголовок<input v-model="selected.title" maxlength="120" :disabled="editingLocked"></label>
+          <label class="field">Текст подсказки<textarea v-model="selected.text" rows="4" maxlength="2000" :disabled="editingLocked" placeholder="Объясните действие пользователя" /></label>
 
           <div v-if="interaction && interaction.kind !== 'trigger'" class="interaction-card" data-testid="interaction-card">
             <strong>{{ interaction.phase === 'record' ? 'Подготовьте нужный элемент' : 'Выберите конечный элемент' }}</strong>
@@ -600,10 +687,10 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(validationTimer); clearNot
             <button v-if="interaction.phase === 'record'" class="button primary" @click="chooseFinalTarget">Выбрать конечный элемент</button>
             <button class="button subtle" @click="cancelInteraction">Отменить настройку</button>
           </div>
-          <button v-else-if="!interaction" class="button full-width" :disabled="!mainReady || playing" @click="beginPick(selected, device)">{{ isDraft(selected) ? 'Выбрать цель шага' : 'Изменить цель этой версии' }}</button>
+          <button v-else-if="!interaction" class="button full-width" :disabled="!mainReady || editingLocked" @click="beginPick(selected, device)">{{ isDraft(selected) ? 'Выбрать цель шага' : 'Изменить цель этой версии' }}</button>
 
           <section class="versions-section" aria-label="Проверка версий">
-            <div class="panel-title"><h3>Доступность элемента</h3><button class="text-button" :disabled="!!interaction || playing" @click="refreshChecks">Проверить</button></div>
+            <div class="panel-title"><h3>Доступность элемента</h3><button class="text-button" :disabled="!!interaction || editingLocked" @click="refreshChecks">Проверить</button></div>
             <p class="hint">Обе версии проверяются автоматически после выбора цели.</p>
             <article v-for="(view, kind) in DEVICES" :key="kind" class="version-card" :class="{ warning: !['ready', 'idle', 'pending'].includes(checks[kind].state), success: checks[kind].state === 'ready' }" :data-testid="'check-' + kind" :data-state="checks[kind].state">
               <div class="version-card-title"><strong>{{ view.label }}</strong><span>{{ describeState(checks[kind].state) }}</span></div>
@@ -612,11 +699,11 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(validationTimer); clearNot
                 <p v-else>Нужно добавить цель для {{ kind === 'mobile' ? 'мобильной' : 'компьютерной' }} версии. Если элемент скрыт, запишите действия, которые его открывают.</p>
               </template>
               <p v-else-if="checks[kind].state === 'ready'" class="hint">Элемент доступен{{ configFor(selected, kind).actions.length ? ' после подготовки' : '' }}.</p>
-              <button v-if="!isDraft(selected) && checks[kind].state !== 'offline'" class="button small" :disabled="!mainReady || !!interaction || playing" @click="configureVariant(kind)">{{ checks[kind].state === 'ready' ? 'Изменить настройку' : 'Настроить версию' }}</button>
+              <button v-if="!isDraft(selected) && checks[kind].state !== 'offline'" class="button small" :disabled="!mainReady || !!interaction || editingLocked" @click="configureVariant(kind)">{{ checks[kind].state === 'ready' ? 'Изменить настройку' : 'Настроить версию' }}</button>
             </article>
           </section>
-          <label class="field color-field">Цвет кнопок тура<input v-model="color" type="color" :disabled="playing"></label>
-          <p class="hint">Черновик сохраняется в этом браузере.</p>
+          <label class="field color-field">Цвет кнопок тура<input v-model="color" type="color" :disabled="editingLocked"></label>
+          <p class="hint">{{ cloud ? 'Черновик сохраняется на сервере выбранного сайта.' : 'Черновик сохраняется в этом браузере.' }}</p>
         </template>
         <div v-else class="empty-inspector"><h2>Выберите шаг</h2><p>Здесь появятся текст подсказки и результаты проверки обеих версий сайта.</p></div>
         <details class="events-details"><summary>События предпросмотра</summary><ul><li v-for="event in events" :key="event.id">{{ event.time }} · {{ event.scenarioName }} · {{ event.name }}</li></ul></details>

@@ -8,7 +8,7 @@
   let session = '', validator = false, epoch = 0, mode = null, run = null, inspection = null, hovered = null, raf = 0, preparing = false
   let host, shadow, ring, card, blocker, heading, copy, progress, back, next, skip, previousFocus
   let offer, offerTitle, offerText, offerStart, offerChoices, notice
-  let catalog = [], siteId = '', launchPending = false, dismissed = new Set()
+  let catalog = [], siteId = '', configVersion = 0, launchPending = false, dismissed = new Set()
 
   const post = (type, payload = {}, id) => embedded && session && window.parent.postMessage({ channel: CHANNEL, session, type, id, payload }, editorOrigin)
   const reply = (request, payload) => post('response', payload, request.id)
@@ -359,6 +359,7 @@
   function runState() {
     return {
       runId: run.id, scenarioId: run.scenarioId, stepId: run.steps[run.index].id,
+      configVersion: run.configVersion,
       index: run.index, pageUrl: run.steps[run.index].pageUrl,
       completed: [...run.completed], started: true,
     }
@@ -378,6 +379,7 @@
     cancel(); ui(); previousFocus = document.activeElement
     run = {
       id: payload.runId || crypto.randomUUID(), scenarioId: payload.scenarioId || '', steps, index,
+      configVersion: Number.isInteger(payload.configVersion) && payload.configVersion >= 0 ? payload.configVersion : configVersion,
       color: /^#[0-9a-f]{6}$/i.test(payload.color) ? payload.color : '#4f46e5',
       target: null, completed: new Set(Array.isArray(payload.completed) ? payload.completed.filter(id => ids.has(id)) : []),
     }
@@ -444,6 +446,7 @@
       return { ...scenario, name: scenario.name.slice(0, 120), steps, color: /^#[0-9a-f]{6}$/i.test(scenario.color) ? scenario.color : '#4f46e5', trigger: { ...trigger, pageUrl: trigger.pageUrl ? pageUrl(trigger.pageUrl) : '' } }
     })
     cancel(); catalog = nextCatalog; siteId = config.siteId
+    configVersion = Number.isInteger(config.version) && config.version >= 0 ? config.version : 0
     if (config.resetOffers) removeStored('dismissed')
     const savedDismissed = stored('dismissed')
     dismissed = new Set(Array.isArray(savedDismissed) ? savedDismissed.filter(id => typeof id === 'string') : [])
@@ -456,7 +459,7 @@
 
   function scenarioPayload(scenario) {
     const kind = innerWidth <= 760 ? 'mobile' : 'desktop'
-    return { scenarioId: scenario.id, color: scenario.color, steps: scenario.steps.map(step => ({ ...step, config: runtimeConfig(step, kind) })) }
+    return { scenarioId: scenario.id, configVersion, color: scenario.color, steps: scenario.steps.map(step => ({ ...step, config: runtimeConfig(step, kind) })) }
   }
 
   function launchScenario(id) {
@@ -477,18 +480,31 @@
     if (embedded) return true
     const url = new URL(settings.configUrl, location.href)
     if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) throw new Error('Проверьте адрес конфигурации.')
+    siteId = settings.siteId || ''
+    let saved = siteId ? stored('run') : null
+    const resumable = value => value && Number.isFinite(value.updatedAt) && Date.now() - value.updatedAt >= 0 && Date.now() - value.updatedAt < 3600000
+    const pinnedVersion = resumable(saved) && Number.isInteger(saved.configVersion) && saved.configVersion > 0 ? saved.configVersion : null
+    if (pinnedVersion !== null) url.searchParams.set('version', String(pinnedVersion))
     const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 10000)
     let config
     try {
       const response = await fetch(url.href, { credentials: 'omit', signal: controller.signal })
-      if (!response.ok) throw new Error('Не удалось загрузить конфигурацию обучения.')
+      if (!response.ok) {
+        if (pinnedVersion !== null && response.status === 404) removeStored('run')
+        throw new Error('Не удалось загрузить конфигурацию обучения.')
+      }
       const body = await response.text()
       if (body.length > 500000) throw new Error('Конфигурация обучения слишком большая.')
       config = JSON.parse(body)
+      if (pinnedVersion !== null && config.version !== pinnedVersion) {
+        removeStored('run')
+        throw new Error('Сервер вернул другую версию обучения. Обновите страницу и повторите запуск тура.')
+      }
     } finally { clearTimeout(timer) }
-    const saved = (() => { siteId = settings.siteId || config.siteId; return stored('run') })()
+    siteId = settings.siteId || config.siteId
+    if (!saved) saved = stored('run')
     configureCatalog(config)
-    if (saved && Number.isFinite(saved.updatedAt) && Date.now() - saved.updatedAt >= 0 && Date.now() - saved.updatedAt < 3600000) {
+    if (resumable(saved)) {
       const scenario = catalog.find(item => item.id === saved.scenarioId)
       if (scenario && Number.isInteger(saved.index) && saved.index >= 0 && saved.index < scenario.steps.length &&
           typeof saved.runId === 'string' && saved.runId.length > 0 && saved.runId.length <= 100 &&

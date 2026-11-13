@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host localhost --port 5173 --strictPort",
-    "demo": "vite demo-source --host localhost --port 4174 --strictPort",
+    "demo": "vite --config vite.config.js demo-source --host localhost --port 4174 --strictPort",
     "build": "vite build",
     "preview": "vite preview --host localhost --port 5173 --strictPort"
   },
