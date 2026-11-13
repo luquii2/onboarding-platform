@@ -32,7 +32,7 @@ def register(body: RegisterRequest, db: DbSession) -> TokenResponse:
 
     existing = db.scalar(select(User).where(User.email == email))
     if existing is not None:
-        raise api_error(status.HTTP_409_CONFLICT, "EMAIL_TAKEN", "Этот e-mail уже зарегистрирован")
+        raise api_error(status.HTTP_409_CONFLICT, "EMAIL_ALREADY_EXISTS", "Этот e-mail уже зарегистрирован")
 
     user = User(
         company_name=body.company_name.strip(),
@@ -47,7 +47,7 @@ def register(body: RegisterRequest, db: DbSession) -> TokenResponse:
         # кто-то успел зарегистрировать этот e-mail между проверкой и сохранением
         db.rollback()
         raise api_error(
-            status.HTTP_409_CONFLICT, "EMAIL_TAKEN", "Этот e-mail уже зарегистрирован"
+            status.HTTP_409_CONFLICT, "EMAIL_ALREADY_EXISTS", "Этот e-mail уже зарегистрирован"
         ) from None
     db.refresh(user)
     return token_response(user)
