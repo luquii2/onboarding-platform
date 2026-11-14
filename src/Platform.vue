@@ -21,6 +21,7 @@ const credentials = ref({ companyName: '', email: '', password: '', acceptTerms:
 const sites = ref([]), loadingSites = ref(false), pageError = ref(''), pageNotice = ref('')
 const editor = ref(null), editorSite = ref(null), editorDocument = ref(null)
 const siteDialog = ref(null), siteSaving = ref(false), siteError = ref(''), siteFields = ref([]), siteForm = ref({ name: '', baseUrl: '' })
+const manageDialog = ref(null), managedSite = ref(null), managedName = ref(''), manageBusy = ref(false), manageError = ref('')
 const installDialog = ref(null), installation = ref(null), installSite = ref(null), installError = ref(''), installBusy = ref(false), publicResult = ref(null), copied = ref(false)
 let routeTicket = 0, authTicket = 0, disposed = false
 const api = computed(() => createApi({ baseUrl: apiBase.value, getToken: () => token.value, onUnauthorized: expiredToken => {
@@ -29,7 +30,7 @@ const api = computed(() => createApi({ baseUrl: apiBase.value, getToken: () => t
   previousUserId.value = user.value?.id ?? previousUserId.value
   clearSession(); sessionError.value = ''
   authError.value = editorSite.value ? 'Сессия истекла. Войдите снова; открытый черновик остаётся в редакторе.' : 'Вход завершён или срок действия сессии истёк. Войдите снова.'
-  siteDialog.value?.close(); installDialog.value?.close()
+  siteDialog.value?.close(); installDialog.value?.close(); manageDialog.value?.close()
   location.hash = '/login'
 } }))
 const isRegister = computed(() => authMode.value === 'register')
@@ -37,7 +38,8 @@ const displayName = computed(() => user.value?.companyName || user.value?.email 
 const installConfigUrl = computed(() => installation.value?.configUrl || '')
 
 function clearSession() {
-  token.value = null; user.value = null; sites.value = []
+  token.value = null; user.value = null; sites.value = []; managedSite.value = null; manageBusy.value = false
+  manageDialog.value?.close()
   try { sessionStorage.removeItem(SESSION_KEY) } catch { /* Current in-memory state is still cleared. */ }
 }
 function storeSession() {
@@ -204,6 +206,40 @@ async function createSite() {
   finally { siteSaving.value = false }
 }
 
+function openSiteSettings(site) {
+  managedSite.value = site; managedName.value = site.name; manageError.value = ''
+  manageDialog.value.showModal()
+}
+async function renameSite() {
+  if (manageBusy.value || !managedSite.value) return
+  const name = managedName.value.trim(), siteId = managedSite.value.id, client = api.value, accountToken = token.value
+  if (!name) { manageError.value = 'Укажите название сайта.'; return }
+  manageBusy.value = true; manageError.value = ''
+  try {
+    const saved = await client.renameSite(siteId, name)
+    if (client !== api.value || accountToken !== token.value || disposed) return
+    if (saved?.id !== siteId || typeof saved.name !== 'string' || !saved.name.trim()) throw new ApiError('Сервер вернул некорректные данные сайта.')
+    sites.value = sites.value.map(site => site.id === siteId ? saved : site)
+    if (editorSite.value?.id === siteId) editorSite.value = { ...editorSite.value, ...saved }
+    pageNotice.value = 'Название сайта сохранено.'; manageDialog.value.close()
+  } catch (error) { if (client === api.value && accountToken === token.value) manageError.value = error.message }
+  finally { if (client === api.value && accountToken === token.value) manageBusy.value = false }
+}
+async function deleteSite() {
+  if (manageBusy.value || !managedSite.value) return
+  const siteId = managedSite.value.id, client = api.value, accountToken = token.value
+  if (!confirm('Удалить сайт «' + managedSite.value.name + '» вместе со всеми сценариями и публикациями? Это действие нельзя отменить.')) return
+  manageBusy.value = true; manageError.value = ''
+  try {
+    await client.deleteSite(siteId)
+    if (client !== api.value || accountToken !== token.value || disposed) return
+    sites.value = sites.value.filter(site => site.id !== siteId)
+    if (editorSite.value?.id === siteId) { editorSite.value = null; editorDocument.value = null }
+    pageNotice.value = 'Сайт удалён.'; manageDialog.value.close(); managedSite.value = null
+  } catch (error) { if (client === api.value && accountToken === token.value) manageError.value = error.message }
+  finally { if (client === api.value && accountToken === token.value) manageBusy.value = false }
+}
+
 async function openInstallation(site) {
   installSite.value = site; installation.value = null; publicResult.value = null; installError.value = ''; copied.value = false
   installDialog.value.showModal(); installBusy.value = true
@@ -326,7 +362,7 @@ onBeforeUnmount(() => { disposed = true; routeTicket++; authTicket++; window.rem
       <p v-if="pageError" class="form-error" role="alert">{{ pageError }}</p><p v-if="pageNotice" class="form-success" role="status">{{ pageNotice }}</p>
       <p v-if="loadingSites" class="loading-state" role="status">Загружаем ваши сайты…</p>
       <section v-else-if="!sites.length && !pageError" class="empty-sites panel"><span class="empty-site-icon">↗</span><h2>Добавьте свой первый сайт</h2><p>После добавления можно настроить обучение и получить скрипт виджета.</p><button class="button primary" @click="openCreateSite">Добавить сайт</button></section>
-      <div v-else class="site-grid"><article v-for="site in sites" :key="site.id" class="site-card panel"><div class="site-card-top"><span class="site-monogram">{{ site.name?.slice(0, 1).toUpperCase() }}</span><span class="site-status" :class="site.installationStatus">{{ statusLabel(site.installationStatus) }}</span></div><h2>{{ site.name }}</h2><a :href="safeSiteUrl(site.baseUrl)" target="_blank" rel="noopener noreferrer" class="site-url">{{ site.baseUrl }}</a><p class="hint">{{ site.lastSeenAt ? 'Последний сигнал: ' + date(site.lastSeenAt) : 'Установите виджет, чтобы проверить подключение.' }}</p><div class="site-card-actions"><button class="button primary" @click="go('/sites/' + encodeURIComponent(site.id))">Открыть конструктор</button><button class="button" @click="openInstallation(site)">Код подключения</button></div></article></div>
+      <div v-else class="site-grid"><article v-for="site in sites" :key="site.id" class="site-card panel"><div class="site-card-top"><span class="site-monogram">{{ site.name?.slice(0, 1).toUpperCase() }}</span><span class="site-status" :class="site.installationStatus">{{ statusLabel(site.installationStatus) }}</span></div><h2>{{ site.name }}</h2><a :href="safeSiteUrl(site.baseUrl)" target="_blank" rel="noopener noreferrer" class="site-url">{{ site.baseUrl }}</a><p class="hint">{{ site.lastSeenAt ? 'Последний сигнал: ' + date(site.lastSeenAt) : 'Установите виджет, чтобы проверить подключение.' }}</p><div class="site-card-actions"><button class="button primary" @click="go('/sites/' + encodeURIComponent(site.id))">Открыть конструктор</button><button class="button" @click="openInstallation(site)">Код подключения</button><button class="button subtle" @click="openSiteSettings(site)">Настройки сайта</button></div><p class="hint">Сценариев: {{ site.scenariosCount }} · {{ site.publishedVersion ? 'Публикация №' + site.publishedVersion : 'Ещё не опубликован' }}</p></article></div>
     </main>
 
     <div v-if="mode === 'demo'" class="demo-heading"><button class="text-button" @click="go(user ? '/sites' : '/login')">← {{ user ? 'Мои сайты' : 'Личный кабинет' }}</button><span>Локальный демочерновик · без сохранения на сервере</span></div>
@@ -340,6 +376,13 @@ onBeforeUnmount(() => { disposed = true; routeTicket++; authTicket++; window.rem
       <div class="dialog-heading"><h2 id="add-site-title">Добавить сайт</h2><button class="dialog-close" aria-label="Закрыть добавление сайта" :disabled="siteSaving" @click="siteDialog.close()">×</button></div>
       <p class="hint">Укажите главную страницу сайта или адрес проекта в подпапке.</p><p v-if="siteError" class="form-error" role="alert">{{ siteError }}</p>
       <form @submit.prevent="createSite"><label class="field">Название сайта<input v-model="siteForm.name" required maxlength="200" :disabled="siteSaving" :aria-invalid="!!fieldError(siteFields, 'name')" autofocus></label><label class="field">Адрес сайта<input v-model="siteForm.baseUrl" type="url" placeholder="https://example.com/" required maxlength="2048" :disabled="siteSaving" :aria-invalid="!!fieldError(siteFields, 'baseUrl')"></label><button class="text-button" type="button" :disabled="siteSaving" @click="useDemoSite">Подставить адрес демосайта</button><div class="dialog-actions"><button class="button" type="button" :disabled="siteSaving" @click="siteDialog.close()">Отмена</button><button class="button primary" type="submit" :disabled="siteSaving">{{ siteSaving ? 'Сохраняем…' : 'Добавить сайт' }}</button></div></form>
+    </dialog>
+
+    <dialog ref="manageDialog" class="platform-dialog" aria-labelledby="manage-site-title" @cancel="manageBusy && $event.preventDefault()">
+      <div class="dialog-heading"><h2 id="manage-site-title">Настройки сайта</h2><button class="dialog-close" aria-label="Закрыть настройки сайта" :disabled="manageBusy" @click="manageDialog.close()">×</button></div>
+      <p class="hint">{{ managedSite?.baseUrl }}</p><p v-if="manageError" class="form-error" role="alert">{{ manageError }}</p>
+      <form @submit.prevent="renameSite"><label class="field">Название сайта<input v-model="managedName" required maxlength="200" :disabled="manageBusy" autofocus></label><div class="dialog-actions"><button class="button" type="button" :disabled="manageBusy" @click="manageDialog.close()">Отмена</button><button class="button primary" type="submit" :disabled="manageBusy">{{ manageBusy ? 'Сохраняем…' : 'Сохранить название' }}</button></div></form>
+      <details class="delete-site-settings"><summary>Удаление сайта</summary><p class="hint">Сайт, его сценарии и все публикации будут удалены без возможности восстановления.</p><button class="button danger-button" :disabled="manageBusy" @click="deleteSite">Удалить сайт</button></details>
     </dialog>
 
     <dialog ref="installDialog" class="platform-dialog installation-dialog" aria-labelledby="installation-title">

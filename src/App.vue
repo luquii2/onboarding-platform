@@ -11,7 +11,8 @@ const SITE = props.site?.baseUrl || import.meta.env.VITE_DEMO_SITE_URL || 'http:
 const STORAGE = 'onboarding-prototype:' + SITE
 const serverState = ref({ state: 'saved', error: '', revision: props.initialDocument?.revision ?? 0, updatedAt: props.initialDocument?.updatedAt, dirty: false, busy: false })
 const publishing = ref(false), publishedVersion = ref(props.site?.publishedVersion ?? 0)
-let publishAttempt = null
+const publishedRevision = ref(props.initialDocument?.publishedProjectRevision ?? null), publicationHistory = ref([]), historyLoading = ref(false), historyError = ref(''), publicationError = ref(''), publicationIssues = ref([])
+let publishAttempt = null, historyRequest = 0
 const editingLocked = computed(() => playing.value || serverState.value.state === 'loading' || publishing.value)
 const saveLabel = computed(() => ({ saved: 'Сохранено на сервере', unsaved: 'Есть несохранённые изменения', saving: 'Сохраняем на сервере…', loading: 'Загружаем с сервера…', conflict: 'Конфликт версий', error: 'Не удалось сохранить' })[serverState.value.state])
 let persistence
@@ -103,16 +104,46 @@ function downloadDraft() {
   const link = document.createElement('a'); link.href = url; link.download = 'onboarding-project.json'; link.click()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
+async function loadPublications(force = false) {
+  if (!cloud || historyLoading.value && !force) return
+  const ticket = ++historyRequest
+  historyLoading.value = true; historyError.value = ''
+  try {
+    const items = await props.api.publications(props.site.id)
+    if (disposed || ticket !== historyRequest) return
+    publicationHistory.value = items
+    if (items.length) { publishedVersion.value = items[0].version; publishedRevision.value = items[0].projectRevision }
+  } catch (error) { if (!disposed && ticket === historyRequest) historyError.value = error.message }
+  finally { if (!disposed && ticket === historyRequest) historyLoading.value = false }
+}
+async function unpublishProject() {
+  if (publishing.value || !cloud || !confirm('Снять все туры этого сайта с публикации? Новые посетители не увидят обучение. Черновик останется в конструкторе.')) return
+  publishing.value = true; publicationError.value = ''; publicationIssues.value = []
+  try {
+    const result = await props.api.unpublish(props.site.id)
+    if (!Number.isInteger(result?.version) || result.version < 1 || result.projectRevision !== null) throw new Error('Сервер вернул некорректный ответ снятия с публикации.')
+    const config = await props.api.publicConfig(props.site.id, result.version)
+    if (config.schema !== 1 || config.siteId !== props.site.id || config.version !== result.version || !Array.isArray(config.scenarios) || config.scenarios.length) throw new Error('Сервер не подтвердил снятие туров с публикации. Повторите проверку конфигурации.')
+    if (disposed) return
+    publishedVersion.value = result.version; publishedRevision.value = null
+    status.value = 'Туры сняты с публикации. Черновик сохранён в конструкторе.'
+    notify('Туры сняты с публикации', 'Новые посетители не увидят обучение. Вы можете опубликовать его снова.')
+    await loadPublications(true)
+  } catch (error) { if (!disposed) { publicationError.value = error.message; status.value = error.message } }
+  finally { if (!disposed) publishing.value = false }
+}
 async function checkServerConfig() {
   try {
     const config = await props.api.publicConfig(props.site.id)
-    if (config.siteId !== props.site.id || config.origin && config.origin !== new URL(SITE).origin || !Array.isArray(config.scenarios)) throw new Error('Публичная конфигурация не соответствует выбранному сайту.')
+    if (config.schema !== 1 || !Number.isInteger(config.version) || config.version < 1 || config.siteId !== props.site.id || config.origin && config.origin !== new URL(SITE).origin || !Array.isArray(config.scenarios)) throw new Error('Публичная конфигурация не соответствует выбранному сайту.')
+    publishedVersion.value = config.version
+    await loadPublications(true)
     status.value = 'Конфигурация получена с сервера: версия ' + config.version + ', сценариев — ' + config.scenarios.length + '.'
   } catch (error) { status.value = error.message }
 }
 async function publishProject() {
   if (publishing.value) return
-  publishing.value = true
+  publishing.value = true; publicationError.value = ''; publicationIssues.value = []
   try {
     const expected = exportProject(project.value, SITE)
     if (new Blob([JSON.stringify(expected, null, 2)]).size > 500000) throw new Error('Конфигурация превышает 500 КБ. Сократите содержимое сценариев.')
@@ -123,11 +154,13 @@ async function publishProject() {
     if (!Number.isInteger(result?.version) || result.version < 1 || result.projectRevision !== revision) throw new Error('Сервер вернул некорректный ответ публикации.')
     const live = await props.api.publicConfig(props.site.id, result.version)
     if (live.schema !== 1 || live.siteId !== props.site.id || live.version !== result.version || live.origin && live.origin !== new URL(SITE).origin || runtimeSignature(live, SITE) !== runtimeSignature(expected, SITE)) throw new Error('Опубликованный тур не совпадает с отправленным. Проверьте сохранение публикации и публичный endpoint на бэкенде.')
-    publishedVersion.value = result.version; publishAttempt = null
+    if (disposed) return
+    publishedVersion.value = result.version; publishedRevision.value = revision; publishAttempt = null
     status.value = 'Сценарии опубликованы. Версия ' + live.version + ' доступна виджету с сервера.'
     notify('Сценарии опубликованы', 'Версия ' + live.version + ' доступна виджету по адресу API.')
-  } catch (error) { status.value = error.message }
-  finally { publishing.value = false }
+    await loadPublications(true)
+  } catch (error) { if (!disposed) { status.value = error.message; publicationError.value = error.message; publicationIssues.value = error.issues || [] } }
+  finally { if (!disposed) publishing.value = false }
 }
 function beforeUnload(event) { if (cloud && (persistence.isDirty() || publishing.value)) { event.preventDefault(); event.returnValue = '' } }
 if (cloud) window.addEventListener('beforeunload', beforeUnload)
@@ -627,15 +660,18 @@ onBeforeUnmount(() => { disposed = true; persistence?.dispose(); window.removeEv
         <div class="launch-actions"><button class="button primary" data-testid="save-launch" :disabled="editingLocked || !!interaction" @click="saveLaunchSettings">Сохранить настройки запуска</button><span v-if="launchReady" class="hint">Настройки сохранены</span></div>
       </details>
       <div v-if="interaction?.kind === 'trigger'" class="interaction-card"><strong>Выберите элемент запуска в окне сайта</strong><p>Он будет запускать только сценарий «{{ scenario.name }}».</p><button class="button" @click="cancelInteraction">Отменить настройку</button></div>
-      <details class="connection-details">
+      <details class="connection-details" @toggle="cloud && $event.target.open && loadPublications()">
         <summary>Подключение сайта и экспорт</summary>
         <p v-if="cloud">Черновик сохраняется на сервере. Виджет получает опубликованные сценарии по адресу API ниже. Установите скрипт на все страницы, участвующие в обучении.</p>
         <p v-else>В деморежиме настройки сохраняются в этом браузере. Для ручного подключения разместите <code>onboarding.json</code> на сайте и добавьте скрипт на все страницы.</p>
         <label class="field">Адрес конфигурации виджета<input v-model="configUrl" type="url" :readonly="cloud"></label>
         <pre class="code-block">{{ installScript }}</pre>
         <button v-if="cloud" class="button primary" :disabled="editingLocked || serverState.busy || !!interaction" @click="publishProject">Опубликовать сценарии</button>
-        <button v-if="cloud" class="button" @click="checkServerConfig">Проверить тур с сервера</button>
-        <p v-if="cloud" class="hint">Опубликованная версия: {{ publishedVersion || 'ещё нет' }}. Сохранение черновика и публикация — отдельные действия.</p>
+        <button v-if="cloud" class="button" :disabled="publishing" @click="checkServerConfig">Проверить тур с сервера</button>
+        <p v-if="cloud" class="hint">{{ publishedVersion ? publishedRevision === null ? 'Туры сняты с публикации · версия ' + publishedVersion : 'Опубликованная версия: ' + publishedVersion : 'Опубликованных версий ещё нет' }}. Сохранение черновика и публикация — отдельные действия.</p>
+        <p v-if="publicationError" class="form-error" role="alert">{{ publicationError }}</p>
+        <ul v-if="publicationIssues.length" class="publication-issues"><li v-for="(issue, index) in publicationIssues" :key="index">{{ issue.message }}</li></ul>
+        <div v-if="cloud" class="publication-history"><div class="inline-actions"><strong>История публикаций</strong><button class="text-button" :disabled="historyLoading || publishing" @click="loadPublications()">{{ historyLoading ? 'Загружаем…' : 'Обновить историю' }}</button></div><p v-if="historyError" class="form-error" role="alert">{{ historyError }}</p><p v-else-if="!historyLoading && !publicationHistory.length" class="hint">Пока нет публикаций.</p><ol v-else><li v-for="item in publicationHistory" :key="item.version"><span>Версия {{ item.version }}{{ item.version === publishedVersion ? ' · текущая' : '' }}</span><small>{{ item.projectRevision === null ? 'Туры сняты с публикации' : 'Ревизия черновика ' + item.projectRevision }}</small></li></ol><button class="button danger-button" :disabled="editingLocked || serverState.busy || !!interaction || !publishedVersion || publishedRevision === null" @click="unpublishProject">Снять туры с публикации</button></div>
         <button class="button" :disabled="editingLocked || !!interaction" @click="downloadConfig">Скачать onboarding.json</button>
       </details>
     </section>

@@ -8,7 +8,9 @@ export function canonicalUrl(value, base) {
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
     throw new Error('Нужен обычный адрес страницы сайта.')
   }
-  if (url.origin !== new URL(base).origin) throw new Error('Выберите страницу подключенного сайта.')
+  const site = new URL(base)
+  const basePath = site.pathname.endsWith('/') ? site.pathname : site.pathname.slice(0, site.pathname.lastIndexOf('/') + 1)
+  if (url.origin !== site.origin || !url.pathname.startsWith(basePath) && url.pathname + '/' !== basePath) throw new Error('Выберите страницу внутри адреса и папки подключённого сайта.')
   url.hash = ''
   return url.href
 }

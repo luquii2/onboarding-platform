@@ -73,3 +73,12 @@
 .cloud-save-panel .form-error { flex-basis: 100%; margin: 0; }
 @media (max-width: 800px) { .auth-layout { grid-template-columns: minmax(0, 1fr); gap: 32px; padding: 38px 20px; max-width: 530px; } .auth-story h1 { font-size: 30px; } .auth-story br { display: none; } .auth-story .story-flow { margin: 18px 0; } .api-settings { margin: 16px; } .api-settings form { grid-template-columns: minmax(0, 1fr); gap: 0; } }
 @media (max-width: 500px) { .platform-header { padding: 16px; } .platform-content { padding: 30px 16px; } .platform-nav { gap: 10px; } .account-name { display: none; } .auth-card { padding: 22px; } .sites-heading .inline-actions { width: 100%; } .platform-dialog { padding: 20px; } }
+
+.delete-site-settings, .publication-history { border-top: 1px solid #e3e7f0; margin-top: 20px; padding-top: 16px; }
+.delete-site-settings summary { cursor: pointer; font-size: 12px; color: #a13e41; }
+.danger-button { color: #a13e41; border-color: #f0d6d5; }
+.publication-history strong { font-size: 12px; }
+.publication-history ol { max-height: 240px; overflow: auto; padding: 0; list-style: none; }
+.publication-history li { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 10px 0; border-bottom: 1px solid #edf0f5; font-size: 12px; }
+.publication-history small { color: #788297; }
+.publication-issues { color: #a13e41; font-size: 12px; line-height: 1.65; }

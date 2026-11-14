@@ -5,8 +5,9 @@ const fieldNames = {
 }
 
 export class ApiError extends Error {
-  constructor(message, { status = 0, code = '', fields = [] } = {}) {
+  constructor(message, { status = 0, code = '', fields = [], issues = [], currentRevision = null } = {}) {
     super(message); this.name = 'ApiError'; this.status = status; this.code = code; this.fields = fields
+    this.issues = issues; this.currentRevision = currentRevision
   }
 }
 
@@ -52,13 +53,20 @@ function responseError(status, data) {
     REVISION_CONFLICT: 'Проект изменён в другой вкладке. Загрузите версию с сервера или скачайте свои изменения.',
     EMAIL_ALREADY_EXISTS: 'Этот email уже зарегистрирован. Войдите в аккаунт.',
     SITE_ALREADY_EXISTS: 'Этот сайт уже добавлен в ваш аккаунт.',
+    SITE_NOT_FOUND: 'Сайт не найден или недоступен вашему аккаунту. Обновите список сайтов.',
+    PAGE_OUTSIDE_SITE: 'В проекте есть страница за пределами добавленного сайта. Выберите страницы внутри его адреса и папки.',
+    PROJECT_TOO_LARGE: 'Проект превышает 500 КБ. Сократите содержимое сценариев.',
+    NOT_PUBLISHED: 'У этого сайта ещё нет опубликованных туров. Сохраните проект и опубликуйте сценарии в конструкторе.',
+    VERSION_NOT_FOUND: 'Эта версия публикации недоступна. Обновите список публикаций.',
     INVALID_CREDENTIALS: 'Неверный email или пароль.',
     NOT_AUTHENTICATED: 'Войдите в аккаунт, чтобы продолжить.',
     INVALID_TOKEN: 'Вход завершён или срок действия сессии истёк. Войдите снова.',
   }
   const fallback = ({ 401: 'Сессия истекла. Войдите снова.', 403: 'Недостаточно прав для этого действия.', 404: 'Данные не найдены или недоступны вашему аккаунту.', 409: 'Данные изменились. Обновите их перед повторной попыткой.', 413: 'Проект слишком большой для отправки.', 422: 'Проверьте заполнение полей.', 429: 'Слишком много запросов. Повторите немного позже.' })[status] || 'Сервер не смог выполнить запрос. Повторите позже.'
   const supplied = typeof detail?.message === 'string' && /[а-яё]/i.test(detail.message) ? detail.message.slice(0, 400) : ''
-  return new ApiError(messages[code] || supplied || fallback, { status, code: code || 'HTTP_' + status })
+  const issues = Array.isArray(detail?.errors) ? detail.errors.filter(issue => typeof issue?.message === 'string').slice(0, 100).map(issue => ({ scenarioId: typeof issue.scenarioId === 'string' ? issue.scenarioId : null, message: issue.message.slice(0, 500) })) : []
+  const currentRevision = Number.isInteger(detail?.currentRevision) && detail.currentRevision >= 0 ? detail.currentRevision : null
+  return new ApiError(messages[code] || supplied || issues[0]?.message || fallback, { status, code: code || 'HTTP_' + status, issues, currentRevision })
 }
 
 export function authResult(data) {
@@ -128,6 +136,9 @@ export function createApi({ baseUrl, getToken = () => null, onUnauthorized = () 
       return items
     },
     createSite: body => request('/sites', { method: 'POST', body }),
+    renameSite: (siteId, name) => request('/sites/' + id(siteId), { method: 'PATCH', body: { name } }),
+    deleteSite: siteId => request('/sites/' + id(siteId), { method: 'DELETE' }),
+    observedPages: siteId => request('/sites/' + id(siteId) + '/pages'),
     site: siteId => request('/sites/' + id(siteId)),
     installation: siteId => request('/sites/' + id(siteId) + '/installation'),
     async loadProject(siteId) { return validateProjectResponse(await request('/sites/' + id(siteId) + '/project'), siteId) },
@@ -135,6 +146,12 @@ export function createApi({ baseUrl, getToken = () => null, onUnauthorized = () 
     configUrl: siteId => base + '/public/sites/' + id(siteId) + '/config',
     publicConfig: (siteId, version) => request('/public/sites/' + id(siteId) + '/config' + (Number.isInteger(version) ? '?version=' + version : ''), { auth: false }),
     publish: (siteId, revision, idempotencyKey) => request('/sites/' + id(siteId) + '/publications', { method: 'POST', body: { projectRevision: revision }, idempotencyKey }),
+    async publications(siteId) {
+      const items = await request('/sites/' + id(siteId) + '/publications')
+      if (!Array.isArray(items) || items.some(item => !Number.isInteger(item?.version) || item.version < 1 || item.projectRevision !== null && (!Number.isInteger(item.projectRevision) || item.projectRevision < 0))) throw new ApiError('Сервер вернул некорректную историю публикаций.')
+      return items
+    },
+    unpublish: siteId => request('/sites/' + id(siteId) + '/unpublish', { method: 'POST' }),
     async health() {
       if (!base) throw new ApiError('Укажите адрес API.')
       const healthBase = base.replace(/\/api\/v1$/, '')
