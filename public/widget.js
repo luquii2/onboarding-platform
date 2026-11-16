@@ -1,14 +1,39 @@
 (() => {
   const settings = { ...document.currentScript?.dataset }
-  const editorOrigin = settings.editorOrigin
+  const editorOrigin = settings.editorOrigin === 'self' ? location.origin : settings.editorOrigin
   const embedded = !!editorOrigin && window.parent !== window
   if ((!embedded && !settings.configUrl) || window.__onboardingPrototype === 'v3') return
   window.__onboardingPrototype = 'v3'
   const CHANNEL = 'onboarding-prototype/v3'
   let session = '', validator = false, epoch = 0, mode = null, run = null, inspection = null, hovered = null, raf = 0, preparing = false
-  let host, shadow, ring, card, blocker, heading, copy, progress, back, next, skip, previousFocus
+  let host, shadow, ring, card, blocker, heading, copy, progress, back, next, skip, previousFocus, pointer
   let offer, offerTitle, offerText, offerStart, offerChoices, notice
   let catalog = [], siteId = '', configVersion = 0, launchPending = false, dismissed = new Set()
+  let widgetTheme = {}
+  const assetRoot = new URL('design/', document.currentScript?.src || new URL('widget.js', location.href)).href
+
+  function contrast(color) {
+    const rgb = [1, 3, 5].map(index => parseInt(color.slice(index, index + 2), 16))
+    return (rgb[0] * 299 + rgb[1] * 587 + rgb[2] * 114) / 1000 > 145 ? '#0f172a' : '#fff'
+  }
+  function primaryColor(value) { return /^#[0-9a-f]{6}$/i.test(value) && value.toLowerCase() !== '#4f46e5' ? value : widgetTheme.primaryColor || '#4f46e5' }
+  function setTheme(value) {
+    const theme = { primaryColor: '#4f46e5', textColor: '#0f172a', backgroundColor: '#ffffff', fontFamily: 'Inter', borderRadius: 8, defaultPlacement: 'bottom', cardStyle: 'light', showProgress: true, showSkip: true }
+    for (const key of ['primaryColor', 'textColor', 'backgroundColor']) if (/^#[0-9a-f]{6}$/i.test(value?.[key])) theme[key] = value[key]
+    if (typeof value?.fontFamily === 'string' && value.fontFamily.length <= 100 && /^[\p{L}\p{N} ,"'_-]+$/u.test(value.fontFamily)) theme.fontFamily = value.fontFamily
+    if (Number.isInteger(value?.borderRadius) && value.borderRadius >= 0 && value.borderRadius <= 32) theme.borderRadius = value.borderRadius
+    if (['top', 'bottom', 'left', 'right'].includes(value?.defaultPlacement)) theme.defaultPlacement = value.defaultPlacement
+    if (value?.cardStyle === 'colored') theme.cardStyle = 'colored'
+    for (const key of ['showProgress', 'showSkip']) if (typeof value?.[key] === 'boolean') theme[key] = value[key]
+    widgetTheme = theme
+    if (!host) return
+    const colored = theme.cardStyle === 'colored'
+    for (const [name, color] of [['--primary', theme.primaryColor], ['--tip-text', colored ? contrast(theme.primaryColor) : theme.textColor], ['--tip-bg', colored ? theme.primaryColor : theme.backgroundColor]]) host.style.setProperty(name, color)
+    host.style.setProperty('--tip-muted', colored ? contrast(theme.primaryColor) : theme.textColor.toLowerCase() === '#0f172a' ? '#64748b' : theme.textColor)
+    host.style.setProperty('--tip-radius', theme.borderRadius + 'px'); host.style.setProperty('--tip-font', theme.fontFamily)
+    progress.hidden = !theme.showProgress; skip.hidden = !theme.showSkip
+    if (run) { const color = primaryColor(run.color); next.style.background = color; next.style.color = contrast(color) }
+  }
 
   const post = (type, payload = {}, id) => embedded && session && window.parent.postMessage({ channel: CHANNEL, session, type, id, payload }, editorOrigin)
   const reply = (request, payload) => post('response', payload, request.id)
@@ -138,24 +163,27 @@
       :host{all:initial;position:fixed;inset:0;z-index:2147483647;pointer-events:none;color-scheme:light}
       *{box-sizing:border-box}[hidden]{display:none!important}
       #blocker{position:fixed;inset:0;pointer-events:auto}
-      #ring{position:fixed;outline:3px solid #4f46e5;border-radius:7px;pointer-events:none}
-      #card,#offer,#notice{position:fixed;width:320px;max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);overflow:auto;padding:18px;background:#fff;color:#20243a;border-radius:12px;box-shadow:0 12px 40px #0003;font:15px/1.5 system-ui;pointer-events:auto}
-      #offer,#notice{right:20px;bottom:20px;border:1px solid #e0e5ef}#offer-close{float:right;padding:0 7px;margin:-5px -5px 4px 10px}#offer-start{width:100%;background:#4f46e5;color:white;border-color:transparent}#offer-choices{width:100%;font:inherit;padding:8px;margin-bottom:12px;border:1px solid #d4d9e7;border-radius:7px}
-      h2{font-size:18px;margin:8px 0}p{white-space:pre-wrap;margin:8px 0 16px}small{color:#626b80}
-      nav{display:flex;gap:8px;flex-wrap:wrap}button{font:inherit;border:1px solid #d4d9e7;border-radius:7px;padding:7px 10px;background:#fff;color:#20243a;cursor:pointer}button:focus-visible{outline:3px solid #818cf8}
-    </style><div id="blocker" hidden></div><div id="ring" hidden></div>
+      @font-face{font-family:Inter;font-style:normal;font-weight:100 900;src:url(${JSON.stringify(assetRoot + 'fonts/inter-latin.woff2')}) format('woff2')}
+      @font-face{font-family:Inter;font-style:normal;font-weight:100 900;src:url(${JSON.stringify(assetRoot + 'fonts/inter-cyrillic.woff2')}) format('woff2');unicode-range:U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116}
+      #ring{position:fixed;outline:2px solid var(--primary,#4f46e5);border-radius:7px;pointer-events:none}
+      #card,#offer,#notice{position:fixed;width:300px;max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);overflow:auto;padding:18px;background:var(--tip-bg,#fff);color:var(--tip-text,#0f172a);border:1px solid #e2e8f0;border-radius:var(--tip-radius,8px);box-shadow:0 8px 24px #0f172a12;font:14px/1.45 var(--tip-font,Inter),system-ui,sans-serif;pointer-events:auto}
+      #offer,#notice{right:20px;bottom:20px;width:340px}#offer-close,#card-close{position:absolute;right:12px;top:10px;border:0;padding:0;background:transparent;color:#64748b;font-size:20px;font-weight:400;line-height:22px}#offer-start{background:var(--primary,#4f46e5);color:white;border-color:transparent}#offer-choices{width:100%;font:inherit;padding:8px;margin:12px 0;border:1px solid #e2e8f0;border-radius:7px}
+      #offer-heading{display:flex;align-items:center;gap:14px;margin:8px 20px 22px 0}#offer-icon{display:grid;place-items:center;flex:0 0 36px;width:36px;height:36px;background:url(${JSON.stringify(assetRoot + 'offer-icon.svg')}) center no-repeat;color:var(--primary,#4f46e5);font-size:18px;font-weight:700}#offer-title{margin:0;font-size:18px}#offer-actions{display:flex;gap:12px;margin-top:22px}#offer-actions button{flex:1;min-height:36px;font-size:14px}
+      #card-close{right:8px;top:5px;font-size:17px}#card-pointer{position:fixed;pointer-events:none;z-index:1}#card h2{padding-right:12px}h2{font-size:18px;line-height:22px;margin:0 0 8px;font-weight:700}p{white-space:pre-wrap;margin:0 0 16px;color:var(--tip-muted,#64748b)}small{color:var(--tip-muted,#64748b);font-size:12px}#progress{display:block;margin:0 0 16px}
+      nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap}button{font:inherit;font-size:12px;font-weight:700;line-height:16px;border:1px solid #e2e8f0;border-radius:6px;padding:7px 12px;background:#fff;color:#0f172a;cursor:pointer}button:focus-visible{outline:3px solid #a5b4fc;outline-offset:2px}#skip{margin-right:auto;border-color:transparent;background:transparent;color:#64748b;padding-left:0}
+      @media(max-width:600px){#offer,#notice{right:8px;bottom:8px;width:calc(100vw - 16px);max-width:none}#offer-actions button{min-height:44px}#card{width:calc(100vw - 32px);max-width:359px}}
+    </style><div id="blocker" hidden></div><div id="ring" hidden></div><img id="card-pointer" src="${assetRoot + 'tooltip-pointer.svg'}" alt="" hidden>
     <section id="card" role="dialog" aria-modal="true" aria-labelledby="title" aria-describedby="copy" hidden>
-      <small id="progress"></small><h2 id="title"></h2><p id="copy"></p>
-      <nav aria-label="Управление туром"><button id="back">Назад</button><button id="next">Далее</button><button id="skip">Пропустить</button></nav>
+      <button id="card-close" aria-label="Закрыть обучение">×</button><h2 id="title"></h2><p id="copy"></p><small id="progress"></small>
+      <nav aria-label="Управление туром"><button id="skip">Пропустить</button><button id="back">Назад</button><button id="next">Далее</button></nav>
     </section>
     <aside id="offer" role="complementary" aria-label="Обучение на сайте" hidden>
-      <button id="offer-close" aria-label="Закрыть приглашение">×</button><small>ОБУЧЕНИЕ НА САЙТЕ</small>
-      <h2 id="offer-title"></h2><p id="offer-text"></p>
-      <select id="offer-choices" aria-label="Выберите обучение" hidden></select><button id="offer-start"></button>
+      <button id="offer-close" aria-label="Закрыть приглашение">×</button><div id="offer-heading"><span id="offer-icon" aria-hidden="true">?</span><h2 id="offer-title"></h2></div><p id="offer-text"></p>
+      <select id="offer-choices" aria-label="Выберите обучение" hidden></select><div id="offer-actions"><button id="offer-later">Не сейчас</button><button id="offer-start"></button></div>
     </aside>
     <section id="notice" role="status" hidden><h2>Обучение приостановлено</h2><p id="notice-text"></p><button id="notice-close">Закрыть</button></section>`
     const get = id => shadow.getElementById(id)
-    ring = get('ring'); card = get('card'); blocker = get('blocker'); heading = get('title'); copy = get('copy'); progress = get('progress')
+    ring = get('ring'); card = get('card'); blocker = get('blocker'); heading = get('title'); copy = get('copy'); progress = get('progress'); pointer = get('card-pointer')
     back = get('back'); next = get('next'); skip = get('skip')
     offer = get('offer'); offerTitle = get('offer-title'); offerText = get('offer-text'); offerStart = get('offer-start'); offerChoices = get('offer-choices'); notice = get('notice')
     get('offer-close').onclick = () => {
@@ -164,6 +192,8 @@
       store('dismissed', [...dismissed]); offer.hidden = true
       emit('trigger_dismissed', { scenarioIds })
     }
+    get('offer-later').onclick = get('offer-close').onclick
+    get('card-close').onclick = () => finish('tour_skipped')
     offerChoices.onchange = updateOffer
     offerStart.onclick = () => launchScenario(offerChoices.value)
     get('notice-close').onclick = () => { notice.hidden = true }
@@ -177,6 +207,7 @@
     }
     skip.onclick = () => finish('tour_skipped')
     document.documentElement.append(host)
+    setTheme(widgetTheme)
   }
 
   function analytics(name, message) {
@@ -189,7 +220,7 @@
     epoch++; run = inspection = mode = hovered = null; preparing = false
     launchPending = false
     cancelAnimationFrame(raf); raf = 0
-    if (host) ring.hidden = card.hidden = blocker.hidden = offer.hidden = notice.hidden = true
+    if (host) ring.hidden = card.hidden = blocker.hidden = offer.hidden = notice.hidden = pointer.hidden = true
   }
 
   function finish(name, message) {
@@ -210,11 +241,16 @@
     Object.assign(ring.style, { left: (rect.left - 3) + 'px', top: (rect.top - 3) + 'px', width: (rect.width + 6) + 'px', height: (rect.height + 6) + 'px', boxShadow: dimmed ? '0 0 0 9999px #0f172a66' : '0 0 0 4px #4f46e522' })
     if (dimmed) {
       const width = card.offsetWidth, height = card.offsetHeight
-      const left = Math.max(12, Math.min(rect.left, innerWidth - width - 12))
-      let top = rect.bottom + 12
-      if (top + height > innerHeight - 12) top = rect.top - height - 12
+      let left = rect.left, top = rect.bottom + 16, placement = widgetTheme.defaultPlacement || 'bottom'
+      if (placement === 'top') top = rect.top - height - 16
+      if (placement === 'left') { left = rect.left - width - 16; top = rect.top }
+      if (placement === 'right') { left = rect.right + 16; top = rect.top }
+      if (top + height > innerHeight - 12 && rect.top - height - 16 >= 12) { top = rect.top - height - 16; placement = 'top' }
+      left = Math.max(12, Math.min(left, innerWidth - width - 12))
       top = Math.max(12, Math.min(top, innerHeight - height - 12))
       Object.assign(card.style, { left: left + 'px', top: top + 'px' })
+      pointer.hidden = !['top', 'bottom'].includes(placement) || widgetTheme.cardStyle === 'colored' || !['#ffffff', '#fff'].includes((widgetTheme.backgroundColor || '#fff').toLowerCase())
+      if (!pointer.hidden) Object.assign(pointer.style, { left: Math.max(left + 18, Math.min(rect.left + rect.width / 2 - 16, left + width - 50)) + 'px', top: (placement === 'top' ? top + height - 2 : top - 17) + 'px', transform: placement === 'top' ? 'rotate(180deg)' : '' })
     }
   }
 
@@ -283,6 +319,7 @@
           if (result.state === 'ready') { inspection = { target: result.element }; result.element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }); draw(result.element); animate() }
         }
         reply(data, { state: result.state, message: result.message || '', label: result.element ? readable(result.element) : '' })
+      } else if (data.type === 'theme') { setTheme(payload.theme); reply(data, { ok: true })
       } else if (data.type === 'pick-start') {
         if (validator || typeof payload.taskId !== 'string') return
         cancel(); ui(); mode = { kind: 'pick', taskId: payload.taskId }; animate(); reply(data, { ok: true })
@@ -376,6 +413,7 @@
     const index = payload.index ?? 0
     if (!Number.isInteger(index) || index < 0 || index >= steps.length) throw new Error('Некорректный номер шага.')
     if (payload.runId !== undefined && (typeof payload.runId !== 'string' || !payload.runId || payload.runId.length > 100)) throw new Error('Некорректный запуск.')
+    if (payload.theme) setTheme(payload.theme)
     cancel(); ui(); previousFocus = document.activeElement
     run = {
       id: payload.runId || crypto.randomUUID(), scenarioId: payload.scenarioId || '', steps, index,
@@ -384,9 +422,8 @@
       target: null, completed: new Set(Array.isArray(payload.completed) ? payload.completed.filter(id => ids.has(id)) : []),
     }
     if (run.scenarioId) { dismissed.add(run.scenarioId); store('dismissed', [...dismissed]) }
-    next.style.background = run.color
-    const rgb = [1, 3, 5].map(index => parseInt(run.color.slice(index, index + 2), 16))
-    next.style.color = (rgb[0] * 299 + rgb[1] * 587 + rgb[2] * 114) / 1000 > 145 ? '#111827' : '#fff'
+    const buttonColor = primaryColor(run.color)
+    next.style.background = buttonColor; next.style.color = contrast(buttonColor)
     if (!payload.started) analytics('tour_started')
     showStep()
   }
@@ -407,7 +444,8 @@
     offerTitle.textContent = scenario.trigger.title || 'Нужно помочь освоиться?'
     offerText.textContent = scenario.trigger.text || 'Пройдите короткое обучение.'
     offerStart.textContent = scenario.trigger.buttonText || 'Начать обучение'
-    offerStart.style.background = scenario.color
+    const color = primaryColor(scenario.color)
+    offerStart.style.background = color; offerStart.style.color = contrast(color)
   }
   function renderOffer() {
     if (validator || run || mode || launchPending || !catalog.length) return
@@ -445,7 +483,7 @@
       })
       return { ...scenario, name: scenario.name.slice(0, 120), steps, color: /^#[0-9a-f]{6}$/i.test(scenario.color) ? scenario.color : '#4f46e5', trigger: { ...trigger, pageUrl: trigger.pageUrl ? pageUrl(trigger.pageUrl) : '' } }
     })
-    cancel(); catalog = nextCatalog; siteId = config.siteId
+    cancel(); setTheme(config.theme); catalog = nextCatalog; siteId = config.siteId
     configVersion = Number.isInteger(config.version) && config.version >= 0 ? config.version : 0
     if (config.resetOffers) removeStored('dismissed')
     const savedDismissed = stored('dismissed')

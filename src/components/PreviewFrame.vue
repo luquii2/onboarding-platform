@@ -7,13 +7,15 @@ const props = defineProps({
   height: { type: Number, default: 740 },
   validator: { type: Boolean, default: false },
   identity: { type: String, default: '' },
+  fitHeight: { type: Boolean, default: false },
 })
 const emit = defineEmits(['ready', 'message', 'disconnected', 'loading'])
 const CHANNEL = 'onboarding-prototype/v3'
-const container = ref(null), frame = ref(null), availableWidth = ref(0), connected = ref(false)
+const container = ref(null), frame = ref(null), availableWidth = ref(0), availableHeight = ref(0), connected = ref(false)
 const scale = computed(() => props.validator ? 1 : Math.min(1, (availableWidth.value || props.width) / props.width))
-const viewportStyle = computed(() => ({ width: props.width + 'px', height: props.height + 'px', transform: 'scale(' + scale.value + ')' }))
-const stageStyle = computed(() => ({ width: (props.width * scale.value) + 'px', height: (props.height * scale.value) + 'px' }))
+const viewportHeight = computed(() => props.fitHeight && !props.validator && availableHeight.value > 0 ? Math.max(1, availableHeight.value / scale.value) : props.height)
+const viewportStyle = computed(() => ({ width: props.width + 'px', height: viewportHeight.value + 'px', transform: 'scale(' + scale.value + ')' }))
+const stageStyle = computed(() => ({ width: (props.width * scale.value) + 'px', height: (viewportHeight.value * scale.value) + 'px' }))
 let session = '', handshakeTimer, observer, disposed = false
 const pending = new Map()
 
@@ -71,7 +73,10 @@ onMounted(async () => {
   window.addEventListener('message', receive)
   await nextTick()
   if (disposed || !container.value) return
-  observer = new ResizeObserver(entries => { availableWidth.value = entries[0].contentRect.width })
+  observer = new ResizeObserver(entries => {
+    availableWidth.value = entries[0].contentRect.width
+    availableHeight.value = entries[0].contentRect.height
+  })
   observer.observe(container.value)
 })
 watch(() => props.url, () => { connected.value = false })
@@ -86,7 +91,7 @@ defineExpose({ request, connected, handshake })
 </script>
 
 <template>
-  <div ref="container" class="frame-container" :class="{ 'validator-container': validator }">
+  <div ref="container" class="frame-container" :class="{ 'validator-container': validator, 'fit-height': fitHeight && !validator }">
     <div class="frame-stage" :style="stageStyle">
       <iframe ref="frame" :src="url" :style="viewportStyle" :tabindex="validator ? -1 : undefined"
         :title="validator ? 'Проверка доступности цели' : 'Демосайт для настройки тура'" @load="handshake" />
@@ -96,6 +101,7 @@ defineExpose({ request, connected, handshake })
 
 <style scoped>
 .frame-container { width: 100%; min-width: 0; overflow: hidden; }
+.fit-height { height: 100%; min-height: 0; }
 .frame-stage { position: relative; margin: 0 auto; }
 iframe { position: absolute; top: 0; left: 0; display: block; border: 0; background: white; transform-origin: top left; }
 .validator-container { width: max-content; }

@@ -139,6 +139,8 @@ export function createApi({ baseUrl, getToken = () => null, onUnauthorized = () 
     renameSite: (siteId, name) => request('/sites/' + id(siteId), { method: 'PATCH', body: { name } }),
     deleteSite: siteId => request('/sites/' + id(siteId), { method: 'DELETE' }),
     observedPages: siteId => request('/sites/' + id(siteId) + '/pages'),
+    theme: siteId => request('/sites/' + id(siteId) + '/theme'),
+    saveTheme: (siteId, body) => request('/sites/' + id(siteId) + '/theme', { method: 'PUT', body }),
     site: siteId => request('/sites/' + id(siteId)),
     installation: siteId => request('/sites/' + id(siteId) + '/installation'),
     async loadProject(siteId) { return validateProjectResponse(await request('/sites/' + id(siteId) + '/project'), siteId) },

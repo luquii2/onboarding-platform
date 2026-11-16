@@ -1,5 +1,7 @@
 import { defineConfig, loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import { readFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
@@ -9,6 +11,20 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [vue(), {
       name: 'demo-widget-config',
+      configureServer(server) {
+        server.middlewares.use(async (req, res, next) => {
+          const path = (req.url || '').split('?')[0]
+          if (!path.startsWith('/demo/')) return next()
+          const name = path.slice('/demo/'.length) || 'index.html'
+          if (!['index.html', 'courses.html', 'course.html', 'signup.html', 'style.css', 'onboarding.json'].includes(name)) return next()
+          try {
+            let body = await readFile(resolve(process.cwd(), 'demo-source', name), 'utf8')
+            if (name.endsWith('.html')) body = body.replace(/<script\b[^>]*data-site-id="demo-school"[^>]*><\/script>/, '<script src="/widget.js" data-editor-origin="self" data-site-id="' + escape(env.VITE_WIDGET_SITE_ID || 'demo-school') + '" data-config-url="' + escape(env.VITE_WIDGET_CONFIG_URL || './onboarding.json') + '" defer></script>')
+            res.setHeader('Content-Type', name.endsWith('.html') ? 'text/html; charset=utf-8' : name.endsWith('.css') ? 'text/css; charset=utf-8' : 'application/json; charset=utf-8')
+            res.end(body)
+          } catch (error) { next(error) }
+        })
+      },
       transformIndexHtml(html) {
         if (!env.VITE_WIDGET_SITE_ID || !html.includes('data-site-id="demo-school"')) return html
         return html.replace('data-site-id="demo-school"', 'data-site-id="' + escape(env.VITE_WIDGET_SITE_ID) + '"')

@@ -1,11 +1,18 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import TourEditor from './App.vue'
+import SidebarNav from './components/SidebarNav.vue'
+import AuthIllustration from './components/AuthIllustration.vue'
+import TourList from './components/TourList.vue'
+import AppearanceSettings from './components/AppearanceSettings.vue'
+import AnalyticsPanel from './components/AnalyticsPanel.vue'
+import MobileEditorNotice from './components/MobileEditorNotice.vue'
 import { ApiError, authResult, createApi, normalizeApiBase } from './api.js'
 import './platform.css'
+import './design.css'
 
 const SESSION_KEY = 'onboarding-session:v1', API_KEY = 'onboarding-api:v1'
-const demoUrl = import.meta.env.VITE_DEMO_SITE_URL || 'http://localhost:4174/'
+const demoUrl = import.meta.env.VITE_DEMO_SITE_URL || (import.meta.env.DEV ? new URL('demo/', location.href).href : 'http://localhost:4174/')
 const local = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)
 let storedBase = ''
 try { storedBase = localStorage.getItem(API_KEY) || '' } catch { /* The configured environment still works without storage. */ }
@@ -16,6 +23,7 @@ const apiInput = ref(apiBase.value), connectionOpen = ref(false), connectionErro
 const token = ref(null), user = ref(null), previousUserId = ref(null), booting = ref(true)
 const sessionError = ref(''), accountError = ref('')
 const route = ref(location.hash.slice(1) || '/login'), mode = ref('auth'), authMode = ref('login')
+const sidebarOpen = ref(false), passwordVisible = ref(false), selectedSiteId = ref(''), toursPanel = ref(null), appearancePanel = ref(null), editorTitle = ref('Конструктор тура')
 const working = ref(false), authError = ref(''), authFields = ref([]), authNotice = ref('')
 const credentials = ref({ companyName: '', email: '', password: '', acceptTerms: false })
 const sites = ref([]), loadingSites = ref(false), pageError = ref(''), pageNotice = ref('')
@@ -36,6 +44,10 @@ const api = computed(() => createApi({ baseUrl: apiBase.value, getToken: () => t
 const isRegister = computed(() => authMode.value === 'register')
 const displayName = computed(() => user.value?.companyName || user.value?.email || '')
 const installConfigUrl = computed(() => installation.value?.configUrl || '')
+const showShell = computed(() => !['auth', 'session-error'].includes(mode.value) && !!user.value)
+const activeNav = computed(() => mode.value === 'editor' ? 'tours' : mode.value)
+const pageTitle = computed(() => ({ sites: 'Сайты', tours: 'Туры', analytics: 'Аналитика', appearance: 'Настройка вида подсказок', editor: editorTitle.value })[mode.value] || 'Онбординг')
+const assetBase = import.meta.env.BASE_URL + 'design/'
 
 function clearSession() {
   token.value = null; user.value = null; sites.value = []; managedSite.value = null; manageBusy.value = false
@@ -50,7 +62,7 @@ function validUser(value) {
   return value
 }
 function fieldError(fields, name) { return fields.find(field => field.path === name)?.message || '' }
-function statusLabel(status) { return ({ connected: 'Виджет отвечает', inactive: 'Нет недавних сигналов', not_detected: 'Виджет не обнаружен' })[status] || 'Статус неизвестен' }
+function statusLabel(status) { return ({ connected: 'Виджет установлен', inactive: 'Виджет не отвечает', not_detected: 'Виджет не найден' })[status] || 'Статус неизвестен' }
 function safeSiteUrl(value) {
   try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : undefined } catch { return undefined }
 }
@@ -59,25 +71,43 @@ function date(value) {
   return parsed && Number.isFinite(parsed.getTime()) ? new Intl.DateTimeFormat('ru', { dateStyle: 'short', timeStyle: 'short' }).format(parsed) : 'Сигналов ещё не было'
 }
 
-async function mayLeave() { return !editor.value || await editor.value.mayLeave() }
+async function mayLeave() { if (mode.value === 'appearance' && appearancePanel.value && !appearancePanel.value.mayLeave()) return false; return !editor.value || await editor.value.mayLeave() }
 async function go(path) {
   if (path === route.value) return
-  if (editorSite.value && !await mayLeave()) return
+  if (!await mayLeave()) return
   if (path !== '/login' && path !== '/register') { editorSite.value = null; editorDocument.value = null }
   location.hash = path
+}
+function navigate(path) {
+  sidebarOpen.value = false
+  const query = selectedSiteId.value && path !== '/sites' ? '?site=' + encodeURIComponent(selectedSiteId.value) : ''
+  return go(path + query)
+}
+function editTour(siteId, scenarioId) {
+  selectedSiteId.value = siteId
+  return go('/sites/' + encodeURIComponent(siteId) + (scenarioId ? '?scenario=' + encodeURIComponent(scenarioId) : ''))
+}
+function selectSite(id) {
+  if (!id) return
+  selectedSiteId.value = id
+  if (!['tours', 'appearance'].includes(mode.value)) return
+  const target = '/' + mode.value + '?site=' + encodeURIComponent(id)
+  history.replaceState(null, '', '#' + target); route.value = target
 }
 async function handleRoute() {
   const ticket = ++routeTicket
   route.value = location.hash.slice(1) || '/login'
+  const path = route.value.split('?')[0]
+  const query = new URLSearchParams(route.value.split('?')[1] || '')
+  if (query.has('site')) selectedSiteId.value = query.get('site')
   pageError.value = ''; pageNotice.value = ''
-  if (route.value === '/demo') { mode.value = 'demo'; return }
-  if (['/login', '/register'].includes(route.value)) {
-    mode.value = 'auth'; authMode.value = route.value === '/register' ? 'register' : 'login'; authFields.value = []
+  if (['/login', '/register'].includes(path)) {
+    mode.value = 'auth'; authMode.value = path === '/register' ? 'register' : 'login'; authFields.value = []; passwordVisible.value = false
     return
   }
   if (!user.value) { location.hash = '/login'; mode.value = 'auth'; return }
-  if (route.value === '/sites') { mode.value = 'sites'; await refreshSites(); return }
-  const match = /^\/sites\/([^/]+)$/.exec(route.value)
+  if (['/sites', '/tours', '/analytics', '/appearance'].includes(path)) { mode.value = path.slice(1); await refreshSites(); return }
+  const match = /^\/sites\/([^/]+)$/.exec(path)
   if (!match) { location.hash = '/sites'; return }
   let siteId
   try { siteId = decodeURIComponent(match[1]) } catch { location.hash = '/sites'; return }
@@ -89,6 +119,9 @@ async function handleRoute() {
     if (site.id !== siteId || !site.baseUrl) throw new ApiError('Сервер вернул данные другого сайта.')
     const url = new URL(site.baseUrl)
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.origin !== site.origin) throw new ApiError('Проверьте baseUrl и origin сайта в ответе API.')
+    const scenarioId = query.get('scenario')
+    if (scenarioId && document.project.scenarios.some(item => item.id === scenarioId)) document.project.activeScenarioId = scenarioId
+    selectedSiteId.value = siteId; editorTitle.value = 'Конструктор тура: ' + (document.project.scenarios.find(item => item.id === document.project.activeScenarioId)?.name || document.project.scenarios[0]?.name || 'Новый тур')
     editorSite.value = site; editorDocument.value = document; mode.value = 'editor'
   } catch (error) { if (ticket === routeTicket) { pageError.value = error.message; mode.value = user.value ? 'sites' : 'auth' } }
 }
@@ -99,7 +132,7 @@ async function refreshSites() {
   try {
     const loaded = await currentApi.sites()
     if (currentToken === token.value && currentApi === api.value) sites.value = loaded
-  } catch (error) { if (currentToken === token.value) pageError.value = error.message }
+  } catch (error) { if (currentToken === token.value && currentApi === api.value) pageError.value = error.message }
   finally { if (currentApi === api.value) loadingSites.value = false }
 }
 
@@ -310,16 +343,19 @@ onBeforeUnmount(() => { disposed = true; routeTicket++; authTicket++; window.rem
 </script>
 
 <template>
-  <div class="platform-shell">
-    <header class="platform-header">
-      <a class="platform-brand" href="#/sites" @click.prevent="go(user ? '/sites' : '/login')"><span class="brand-mark">о</span>Онбординг</a>
+  <div class="platform-shell" :class="{ 'has-sidebar': showShell, 'auth-shell': mode === 'auth' }">
+    <SidebarNav v-if="showShell" :active="activeNav" :open="sidebarOpen" :account-name="displayName" @navigate="navigate" @close="sidebarOpen = false" @connection="connectionOpen = !connectionOpen" @logout="signOut()" @logout-all="signOut(true)" />
+    <header class="platform-header" :class="{ 'auth-header': mode === 'auth' || mode === 'session-error', 'editor-page-header': mode === 'editor' }">
+      <button v-if="showShell" class="menu-toggle" aria-label="Открыть главное меню" :aria-expanded="sidebarOpen" @click="sidebarOpen = !sidebarOpen">☰</button>
+      <h1 v-if="showShell" class="page-title">{{ pageTitle }}</h1>
       <div class="platform-nav">
-        <button class="text-button" :aria-expanded="connectionOpen" @click="connectionOpen = !connectionOpen">Подключение API</button>
-        <details v-if="user" class="account-menu">
+        <button v-if="!showShell" class="text-button" :aria-expanded="connectionOpen" @click="connectionOpen = !connectionOpen">Подключение API</button>
+        <button v-if="mode === 'sites'" class="button primary" @click="openCreateSite">+ Добавить сайт</button>
+        <button v-if="mode === 'tours'" class="button primary" :disabled="loadingSites || !sites.length || !toursPanel?.canCreate" @click="toursPanel?.createTour()">+ Создать тур</button>
+        <details v-if="user && !showShell" class="account-menu">
           <summary :aria-label="'Аккаунт: ' + displayName"><span class="account-avatar" aria-hidden="true">{{ displayName.slice(0, 1).toUpperCase() }}</span><span class="account-name">{{ displayName }}</span><span aria-hidden="true">⌄</span></summary>
           <div class="account-menu-actions"><button :disabled="working" @click="signOut()">Выйти</button><button :disabled="working" @click="signOut(true)">Выйти на всех устройствах</button></div>
         </details>
-        <button v-else-if="mode === 'demo'" class="button small" @click="go('/login')">Войти в кабинет</button>
       </div>
     </header>
     <p v-if="accountError" class="account-error form-error" role="alert">{{ accountError }}</p>
@@ -336,40 +372,44 @@ onBeforeUnmount(() => { disposed = true; routeTicket++; authTicket++; window.rem
     <main v-if="booting || mode === 'loading'" class="platform-content"><p class="loading-state" role="status">{{ booting ? 'Проверяем сессию…' : 'Загружаем сайт и проект с сервера…' }}</p></main>
 
     <main v-else-if="mode === 'session-error'" class="platform-content">
-      <section class="session-recovery panel" aria-labelledby="session-error-title"><h1 id="session-error-title">Не удалось проверить вход</h1><p class="form-error" role="alert">{{ sessionError }}</p><p class="hint">Сохранённый вход остаётся в этой вкладке. Повторите проверку, когда сервер станет доступен.</p><div class="inline-actions"><button class="button primary" @click="restoreSession">Повторить проверку</button><button class="button" @click="forgetSession">Войти заново</button><button class="text-button" @click="go('/demo')">Открыть демоконструктор</button></div></section>
+      <section class="session-recovery panel" aria-labelledby="session-error-title"><h1 id="session-error-title">Не удалось проверить вход</h1><p class="form-error" role="alert">{{ sessionError }}</p><p class="hint">Сохранённый вход остаётся в этой вкладке. Повторите проверку, когда сервер станет доступен.</p><div class="inline-actions"><button class="button primary" @click="restoreSession">Повторить проверку</button><button class="button" @click="forgetSession">Войти заново</button></div></section>
     </main>
 
     <main v-else-if="mode === 'auth'" class="auth-layout">
-      <section class="auth-story"><p class="eyebrow">ИНТЕРАКТИВНОЕ ОБУЧЕНИЕ</p><h1>Помогите пользователям<br>сделать первый шаг.</h1><p>Добавьте сайт, создайте сценарий и проведите посетителя по нужным действиям.</p><div class="story-flow"><span>01 · Сайт</span><span>02 · Сценарий</span><span>03 · Обучение</span></div><button class="button" @click="go('/demo')">Открыть демоконструктор</button><p class="hint">Демоконструктор доступен без аккаунта. Его черновик сохраняется только в этом браузере.</p></section>
+      <section class="auth-story"><a class="auth-brand" href="#/login" @click.prevent="go('/login')">Онбординг</a><div class="auth-pitch"><h1>Создавайте подсказки<br>для своего сайта<br>без программистов</h1><p>Собирайте туры из шагов, настраивайте цвета<br>и смотрите статистику прохождения.</p><AuthIllustration /></div></section>
       <section class="auth-card panel" aria-label="Вход и регистрация">
         <div class="auth-tabs"><button :class="{ active: !isRegister }" :disabled="working" @click="authError = ''; authNotice = ''; go('/login')">Вход</button><button :class="{ active: isRegister }" :disabled="working" @click="authError = ''; authNotice = ''; go('/register')">Регистрация</button></div>
-        <h2>{{ isRegister ? 'Создать аккаунт' : 'Войти в кабинет' }}</h2><p class="hint">{{ isRegister ? 'Все сайты и сценарии вашей команды в одном месте.' : 'Продолжите работу со своими сайтами и сценариями.' }}</p>
+        <h2>{{ isRegister ? 'Создайте аккаунт' : 'Добро пожаловать' }}</h2><p class="auth-subtitle">{{ isRegister ? 'Аккаунт компании: добавляйте сайты и туры' : 'Войдите, чтобы управлять подсказками' }}</p>
         <p v-if="!apiBase" class="form-note">Для работы кабинета укажите адрес сервера в разделе «Подключение API».</p>
         <p v-if="authError" class="form-error" role="alert">{{ authError }}</p><p v-if="authNotice" class="form-success" role="status">{{ authNotice }}</p>
         <form @submit.prevent="submitAuth">
-          <label v-if="isRegister" class="field">Название компании<input v-model="credentials.companyName" required maxlength="200" autocomplete="organization" :disabled="working" :aria-invalid="!!fieldError(authFields, 'companyName')"></label>
-          <label class="field">Email<input v-model="credentials.email" type="email" required maxlength="254" autocomplete="email" :disabled="working" :readonly="!!editorSite" :aria-invalid="!!fieldError(authFields, 'email')"></label>
-          <label class="field">Пароль<input v-model="credentials.password" type="password" required :minlength="isRegister ? 8 : 1" maxlength="128" :autocomplete="isRegister ? 'new-password' : 'current-password'" :disabled="working" :aria-invalid="!!fieldError(authFields, 'password')"></label>
-          <p v-if="isRegister" class="hint">Не менее 8 символов.</p>
+          <label v-if="isRegister" class="field">Название компании<input v-model="credentials.companyName" placeholder="ООО «Ромашка»" required maxlength="200" autocomplete="organization" :disabled="working" :aria-invalid="!!fieldError(authFields, 'companyName')"></label>
+          <label class="field">Email<input v-model="credentials.email" type="email" placeholder="name@company.ru" required maxlength="254" autocomplete="email" :disabled="working" :readonly="!!editorSite" :aria-invalid="!!fieldError(authFields, 'email')"></label>
+          <div class="password-field"><label class="field">Пароль<input v-model="credentials.password" :type="passwordVisible ? 'text' : 'password'" :placeholder="isRegister ? 'Не менее 8 символов' : 'Введите пароль'" required :minlength="isRegister ? 8 : 1" maxlength="128" :autocomplete="isRegister ? 'new-password' : 'current-password'" :disabled="working" :aria-invalid="!!fieldError(authFields, 'password')"></label><button type="button" :disabled="working" :aria-pressed="passwordVisible" @click="passwordVisible = !passwordVisible">{{ passwordVisible ? 'Скрыть' : 'Показать' }}</button></div>
+          <div v-if="!isRegister" class="forgot-password"><button class="text-button" type="button" disabled title="Восстановление пароля пока не подключено">Забыли пароль?</button></div>
           <label v-if="isRegister" class="terms-field"><input v-model="credentials.acceptTerms" type="checkbox" required :disabled="working">Принимаю условия использования</label>
-          <button class="button primary full-width auth-submit" type="submit" :disabled="working || !apiBase">{{ working ? 'Отправляем…' : isRegister ? 'Зарегистрироваться' : 'Войти' }}</button>
+          <button class="button primary full-width auth-submit" type="submit" :disabled="working || !apiBase">{{ working ? 'Отправляем…' : isRegister ? 'Создать аккаунт' : 'Войти' }}</button>
         </form>
+        <p class="auth-switch">{{ isRegister ? 'Уже есть аккаунт?' : 'Нет аккаунта?' }} <button class="text-button" :disabled="working" @click="go(isRegister ? '/login' : '/register')">{{ isRegister ? 'Войти' : 'Зарегистрироваться' }}</button></p>
       </section>
     </main>
 
     <main v-else-if="mode === 'sites'" class="platform-content">
-      <div class="sites-heading"><div><p class="eyebrow">ЛИЧНЫЙ КАБИНЕТ</p><h1>Мои сайты <span class="sites-count">{{ sites.length }}</span></h1><p class="hint">Выберите сайт, чтобы продолжить работу со сценариями.</p></div><div class="inline-actions"><button class="button" :disabled="loadingSites" @click="refreshSites">Обновить список</button><button class="button primary" @click="openCreateSite">+ Добавить сайт</button></div></div>
+      <div class="sites-heading"><p>Сайты вашей компании</p><button class="text-button" :disabled="loadingSites" @click="refreshSites">Обновить список</button></div>
       <p v-if="pageError" class="form-error" role="alert">{{ pageError }}</p><p v-if="pageNotice" class="form-success" role="status">{{ pageNotice }}</p>
       <p v-if="loadingSites" class="loading-state" role="status">Загружаем ваши сайты…</p>
-      <section v-else-if="!sites.length && !pageError" class="empty-sites panel"><span class="empty-site-icon">↗</span><h2>Добавьте свой первый сайт</h2><p>После добавления можно настроить обучение и получить скрипт виджета.</p><button class="button primary" @click="openCreateSite">Добавить сайт</button></section>
-      <div v-else class="site-grid"><article v-for="site in sites" :key="site.id" class="site-card panel"><div class="site-card-top"><span class="site-monogram">{{ site.name?.slice(0, 1).toUpperCase() }}</span><span class="site-status" :class="site.installationStatus">{{ statusLabel(site.installationStatus) }}</span></div><h2>{{ site.name }}</h2><a :href="safeSiteUrl(site.baseUrl)" target="_blank" rel="noopener noreferrer" class="site-url">{{ site.baseUrl }}</a><p class="hint">{{ site.lastSeenAt ? 'Последний сигнал: ' + date(site.lastSeenAt) : 'Установите виджет, чтобы проверить подключение.' }}</p><div class="site-card-actions"><button class="button primary" @click="go('/sites/' + encodeURIComponent(site.id))">Открыть конструктор</button><button class="button" @click="openInstallation(site)">Код подключения</button><button class="button subtle" @click="openSiteSettings(site)">Настройки сайта</button></div><p class="hint">Сценариев: {{ site.scenariosCount }} · {{ site.publishedVersion ? 'Публикация №' + site.publishedVersion : 'Ещё не опубликован' }}</p></article></div>
+      <section v-else-if="!sites.length && !pageError" class="empty-sites"><div class="empty-browser-graphic" aria-hidden="true"><img :src="assetBase + 'empty-browser.svg'" alt=""><img :src="assetBase + 'empty-browser-line.svg'" alt=""><img :src="assetBase + 'empty-browser-dot.svg'" alt=""><img :src="assetBase + 'empty-browser-dot.svg'" alt=""><img :src="assetBase + 'empty-browser-title.svg'" alt=""><img :src="assetBase + 'empty-browser-text.svg'" alt=""></div><h2>Добавьте первый сайт</h2><p>Подключите виджет к сайту, чтобы создавать подсказки<br>для его посетителей.</p><button class="button primary" @click="openCreateSite">+ Добавить сайт</button></section>
+      <div v-else class="site-grid"><article v-for="site in sites" :key="site.id" class="site-card panel"><div class="site-card-title"><h2>{{ site.name }}</h2><details class="row-menu"><summary aria-label="Действия с сайтом">⋮</summary><div><button @click="openSiteSettings(site)">Настройки сайта</button><button @click="editTour(site.id)">Открыть конструктор</button></div></details></div><a :href="safeSiteUrl(site.baseUrl)" target="_blank" rel="noopener noreferrer" class="site-url">{{ site.displayUrl || site.baseUrl }}</a><span class="site-status" :class="site.installationStatus">{{ statusLabel(site.installationStatus) }}</span><div class="site-stats"><span>Туров: {{ site.scenariosCount }}</span><span>Запусков за 7 дней: {{ site.startsLast7Days ? site.startsLast7Days.toLocaleString('ru') : '—' }}</span></div><div class="site-card-actions"><button class="button" @click="selectedSiteId = site.id; navigate('/tours')">Туры</button><button class="text-button" @click="openInstallation(site)">Код подключения</button></div></article><button class="site-card add-site-card" @click="openCreateSite">+ Добавить сайт</button></div>
     </main>
 
-    <div v-if="mode === 'demo'" class="demo-heading"><button class="text-button" @click="go(user ? '/sites' : '/login')">← {{ user ? 'Мои сайты' : 'Личный кабинет' }}</button><span>Локальный демочерновик · без сохранения на сервере</span></div>
-    <TourEditor v-if="mode === 'demo'" :key="'demo'" />
+    <TourList v-if="mode === 'tours'" ref="toursPanel" :api="api" :sites="sites" :selected-site-id="selectedSiteId" @edit="editTour" @site-change="selectSite" />
+    <AppearanceSettings v-if="mode === 'appearance'" ref="appearancePanel" :api="api" :sites="sites" :selected-site-id="selectedSiteId" @site-change="selectSite" />
+    <AnalyticsPanel v-if="mode === 'analytics'" :sites="sites" />
+
+    <MobileEditorNotice v-if="mode === 'editor'" @analytics="navigate('/analytics')" />
     <div v-if="editorSite && !booting" v-show="mode === 'editor'" class="cloud-editor">
-      <div class="editor-heading"><button class="text-button" @click="go('/sites')">← Мои сайты</button><span>{{ editorSite.name }}</span><button class="text-button" @click="openInstallation(editorSite)">Код подключения</button></div>
-      <TourEditor :key="editorSite.id + ':' + previousUserId" ref="editor" :site="editorSite" :initial-document="editorDocument" :api="api" />
+      <div class="editor-heading"><button class="text-button" @click="navigate('/tours')">← Туры</button><button class="text-button" @click="go('/sites')">← Мои сайты</button><span>{{ editorSite.name }}</span><button class="text-button" @click="openInstallation(editorSite)">Код подключения</button></div>
+      <TourEditor :key="editorSite.id + ':' + previousUserId" ref="editor" class="desktop-tour-editor" :site="editorSite" :initial-document="editorDocument" :api="api" @title-change="editorTitle = 'Конструктор тура: ' + $event" />
     </div>
 
     <dialog ref="siteDialog" class="platform-dialog" aria-labelledby="add-site-title" @cancel="siteSaving && $event.preventDefault()">

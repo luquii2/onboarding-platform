@@ -1,13 +1,16 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import PreviewFrame from './components/PreviewFrame.vue'
 import { createProjectPersistence } from './projectPersistence.js'
+import { DEFAULT_THEME, normalizeTheme } from './theme.js'
 import { DEVICES, applyTarget, canonicalUrl, configFor, createStep, createScenario, createPlayback, exportProject, isDraft, normalizeActions, readProject, validationKey, confirmTrigger, triggerErrors, triggerIsReady, runtimeSignature } from './model.js'
 import './styles.css'
 
 const props = defineProps({ site: Object, initialDocument: Object, api: Object })
+const emit = defineEmits(['title-change'])
 const cloud = !!props.site
-const SITE = props.site?.baseUrl || import.meta.env.VITE_DEMO_SITE_URL || 'http://localhost:4174/'
+const SITE = props.site?.baseUrl || import.meta.env.VITE_DEMO_SITE_URL || (import.meta.env.DEV ? new URL('demo/', location.href).href : 'http://localhost:4174/')
+const runtimeTheme = ref({ ...DEFAULT_THEME })
 const STORAGE = 'onboarding-prototype:' + SITE
 const serverState = ref({ state: 'saved', error: '', revision: props.initialDocument?.revision ?? 0, updatedAt: props.initialDocument?.updatedAt, dirty: false, busy: false })
 const publishing = ref(false), publishedVersion = ref(props.site?.publishedVersion ?? 0)
@@ -18,8 +21,19 @@ const saveLabel = computed(() => ({ saved: 'Сохранено на сервер
 let persistence
 const mainFrame = ref(null), desktopValidator = ref(null), mobileValidator = ref(null)
 const mainReady = ref(false), frameUrl = ref(SITE), frameEpoch = ref(0), currentPage = ref(SITE)
+watch(mainReady, ready => { if (ready) mainFrame.value?.request('theme', { theme: runtimeTheme.value }).catch(() => {}) })
+onMounted(async () => {
+  if (!cloud || !props.api.theme) return
+  try {
+    const value = await props.api.theme(props.site.id)
+    if (disposed) return
+    runtimeTheme.value = normalizeTheme(value)
+    if (mainReady.value) await mainFrame.value?.request('theme', { theme: runtimeTheme.value }).catch(() => {})
+  } catch { /* Editing and saving the project remain available with the default theme. */ }
+})
 const project = ref(readProject(null, SITE))
 const scenario = computed(() => project.value.scenarios.find(item => item.id === project.value.activeScenarioId) || project.value.scenarios[0])
+watch(() => scenario.value.name, value => emit('title-change', value), { immediate: true })
 const steps = computed({ get: () => scenario.value.steps, set: value => { scenario.value.steps = value } })
 const color = computed({ get: () => scenario.value.color, set: value => { scenario.value.color = value } })
 const selectedId = ref(null), device = ref('desktop')
@@ -482,7 +496,7 @@ async function showPlayback(run) {
   if (!mainReady.value) return
   const ticket = ++runRequest
   try {
-    const result = await mainFrame.value.request('preview', { ...run, runId: run.id })
+    const result = await mainFrame.value.request('preview', { ...run, runId: run.id, theme: runtimeTheme.value })
     if (playback.value !== run || ticket !== runRequest) return
     if (!result?.ok) { failPlayback(result?.message || 'Не удалось запустить сценарий. Обновите страницу сайта.'); return }
     run.started = true
@@ -538,7 +552,7 @@ async function pickTrigger() {
 function disableTriggers() {
   if (!armed.value) return
   launchSession.value = null; triggerRequest++; clearNotification()
-  if (mainReady.value) mainFrame.value.request('configure', { siteId: project.value.siteId, scenarios: [] }).catch(() => {})
+  if (mainReady.value) mainFrame.value.request('configure', { siteId: project.value.siteId, scenarios: [], theme: runtimeTheme.value }).catch(() => {})
 }
 
 async function syncTriggers(resetOffers = false) {
@@ -546,7 +560,7 @@ async function syncTriggers(resetOffers = false) {
   if (!session || !mainReady.value) return
   const ticket = ++triggerRequest
   try {
-    const result = await mainFrame.value.request('configure', { ...session.config, resetOffers })
+    const result = await mainFrame.value.request('configure', { ...session.config, resetOffers, theme: runtimeTheme.value })
     if (ticket !== triggerRequest || launchSession.value !== session) return
     if (!result?.ok) throw new Error(result?.message || 'Не удалось настроить триггеры. Проверьте выбранные элементы.')
     if (!playing.value) {
@@ -590,10 +604,11 @@ onBeforeUnmount(() => { disposed = true; persistence?.dispose(); window.removeEv
 <template>
   <main class="app-shell">
     <header class="app-header">
-      <div><p class="eyebrow">ИНТЕРАКТИВНЫЙ ОНБОРДИНГ</p><h1>Конструктор сценариев</h1></div>
+      <div class="editor-title-controls"><span class="editor-title-label">Тур</span><label class="field scenario-select"><span class="visually-hidden">Сценарий</span><select :title="scenario.name" :value="scenario.id" :disabled="editingLocked || !!interaction" @change="chooseScenario"><option v-for="item in project.scenarios" :key="item.id" :value="item.id">{{ item.name }}</option></select></label><button class="button create-scenario-button" aria-label="Новый сценарий" :disabled="editingLocked || !!interaction || project.scenarios.length >= 20" @click="addScenario">+ Новый сценарий</button></div>
       <span class="connection" :class="{ online: mainReady }">{{ mainReady ? 'Сайт подключен' : 'Подключаем сайт' }}</span>
+      <button v-if="cloud" class="button primary" :disabled="editingLocked || serverState.busy || !!interaction" @click="publishProject">Опубликовать</button>
       <button v-if="playing || armed" class="button" @click="stopPreview">Остановить тур</button>
-      <button v-else class="button primary" :disabled="!mainReady || !steps.length || !!interaction || editingLocked" @click="startTour">Запустить тур</button>
+      <button v-else class="button" :disabled="!mainReady || !steps.length || !!interaction || editingLocked" @click="startTour">Запустить тур</button>
     </header>
     <p class="status-bar" :role="notification ? undefined : 'status'">{{ status }}</p>
     <section v-if="cloud" class="cloud-save-panel panel" aria-label="Сохранение проекта на сервере">
@@ -609,9 +624,7 @@ onBeforeUnmount(() => { disposed = true; persistence?.dispose(); window.removeEv
     </div>
 
     <section class="panel scenarios-panel" aria-label="Сценарии сайта">
-      <div class="scenario-toolbar">
-        <label class="field scenario-select">Сценарий<select :value="scenario.id" :disabled="editingLocked || !!interaction" @change="chooseScenario"><option v-for="item in project.scenarios" :key="item.id" :value="item.id">{{ item.name }} · {{ item.steps.length }} шагов</option></select></label>
-        <button class="button" :disabled="editingLocked || !!interaction || project.scenarios.length >= 20" @click="addScenario">+ Новый сценарий</button>
+      <div class="scenario-toolbar secondary-scenario-actions">
         <button class="button subtle" :disabled="editingLocked || !!interaction || project.scenarios.length < 2" @click="deleteScenario">Удалить сценарий</button>
         <label class="enabled-field"><input v-model="scenario.enabled" type="checkbox" :disabled="editingLocked || !!interaction"> Включён на сайте</label>
       </div>
@@ -677,73 +690,79 @@ onBeforeUnmount(() => { disposed = true; persistence?.dispose(); window.removeEv
     </section>
 
     <div class="workspace">
-      <aside class="panel steps-panel">
-        <div class="panel-title"><h2>Шаги</h2><span class="count">{{ steps.length }}</span></div>
-        <button class="button add-step" :disabled="!mainReady || !!interaction || editingLocked || steps.length >= 50" @click="addStep">+ Выбрать элемент</button>
-        <p v-if="!steps.length" class="empty-hint">Добавьте шаг. Он сразу появится здесь, а затем можно выбрать его цель на сайте.</p>
-        <ol class="step-list">
-          <li v-for="(step, index) in steps" :key="step.id" class="step-item" :class="{ active: selectedId === step.id }" :data-step-id="step.id">
-            <button class="step-select" :disabled="editingLocked || !!interaction" @click="selectStep(step)">
-              <span class="step-number">{{ index + 1 }}</span><span class="step-copy"><strong>{{ step.title || 'Без заголовка' }}</strong><small>{{ isDraft(step) ? 'Черновик · выберите элемент' : pageName(step.pageUrl) }}</small></span>
-            </button>
-            <div class="step-actions">
-              <button :disabled="index === 0 || !!interaction || editingLocked" aria-label="Переместить шаг вверх" @click="moveStep(step.id, -1)">↑</button>
-              <button :disabled="index === steps.length - 1 || !!interaction || editingLocked" aria-label="Переместить шаг вниз" @click="moveStep(step.id, 1)">↓</button>
-              <button :disabled="editingLocked" @click="deleteStep(step.id)">Удалить</button>
-            </div>
-          </li>
-        </ol>
-      </aside>
-
       <section class="panel preview-panel" aria-label="Предпросмотр сайта">
         <div class="preview-toolbar">
           <div class="device-switch" role="group" aria-label="Версия сайта">
             <button v-for="(view, kind) in DEVICES" :key="kind" :aria-pressed="device === kind" :disabled="!!interaction || editingLocked" @click="device = kind">{{ view.label }}</button>
           </div>
-          <a :href="currentPage" target="_blank" rel="noopener">Открыть сайт ↗</a>
+          <a :href="currentPage" target="_blank" rel="noopener" :aria-label="'Открыть страницу ' + currentPage">{{ currentPage }}</a>
         </div>
-        <p class="preview-caption">{{ viewport.label }} · ширина {{ viewport.width }} px · {{ playing ? 'Шаг ' + (playback.index + 1) + ' из ' + playback.steps.length : armed ? 'ожидаем запуска сценария' : 'масштаб подстраивается под панель' }}</p>
         <div class="preview-surface">
-          <PreviewFrame :key="frameEpoch" ref="mainFrame" :url="frameUrl" :width="viewport.width" :height="viewport.height"
+          <PreviewFrame :key="frameEpoch" ref="mainFrame" :url="frameUrl" :width="viewport.width" :height="viewport.height" fit-height
             @loading="onMainLoading" @ready="onMainReady" @disconnected="onMainOffline" @message="onWidgetEvent" />
+        </div>
+        <div class="preview-footer">
+          <p class="preview-caption">{{ viewport.label }} · ширина {{ viewport.width }} px · {{ playing ? 'Шаг ' + (playback.index + 1) + ' из ' + playback.steps.length : armed ? 'ожидаем запуска сценария' : 'масштаб подстраивается под панель' }}</p>
+          <p class="editor-status" role="status">{{ status }}</p>
         </div>
       </section>
 
-      <aside class="panel inspector">
-        <template v-if="selected">
-          <div class="panel-title"><h2>Настройка шага</h2><span v-if="isDraft(selected)" class="draft-badge">Черновик</span></div>
-          <label class="field">Заголовок<input v-model="selected.title" maxlength="120" :disabled="editingLocked"></label>
-          <label class="field">Текст подсказки<textarea v-model="selected.text" rows="4" maxlength="2000" :disabled="editingLocked" placeholder="Объясните действие пользователя" /></label>
+      <div class="editor-sidebar" role="region" aria-label="Шаги и настройки тура" tabindex="0">
+        <aside class="panel steps-panel">
+          <div class="panel-title"><h2>Шаги</h2><span class="count">{{ steps.length }}</span></div>
+          <button class="button add-step" :disabled="!mainReady || !!interaction || editingLocked || steps.length >= 50" @click="addStep">+ Выбрать элемент</button>
+          <p v-if="!steps.length" class="empty-hint">Добавьте шаг. Он сразу появится здесь, а затем можно выбрать его цель на сайте.</p>
+          <ol class="step-list">
+            <li v-for="(step, index) in steps" :key="step.id" class="step-item" :class="{ active: selectedId === step.id }" :data-step-id="step.id">
+              <button class="step-select" :disabled="editingLocked || !!interaction" @click="selectStep(step)">
+                <span class="step-number">{{ index + 1 }}</span><span class="step-copy"><strong>{{ step.title || 'Без заголовка' }}</strong><small>{{ isDraft(step) ? 'Черновик · выберите элемент' : pageName(step.pageUrl) }}</small></span>
+              </button>
+              <div class="step-actions">
+                <button :disabled="index === 0 || !!interaction || editingLocked" aria-label="Переместить шаг вверх" @click="moveStep(step.id, -1)">↑</button>
+                <button :disabled="index === steps.length - 1 || !!interaction || editingLocked" aria-label="Переместить шаг вниз" @click="moveStep(step.id, 1)">↓</button>
+                <button :disabled="editingLocked" @click="deleteStep(step.id)">Удалить</button>
+              </div>
+            </li>
+          </ol>
+        </aside>
 
-          <div v-if="interaction && interaction.kind !== 'trigger'" class="interaction-card" data-testid="interaction-card">
-            <strong>{{ interaction.phase === 'record' ? 'Подготовьте нужный элемент' : 'Выберите конечный элемент' }}</strong>
-            <p v-if="interaction.phase === 'record'">Откройте нужное меню, список или вкладку на сайте. Эти действия будут сохранены для версии «{{ DEVICES[interaction.device].label }}».</p>
-            <p v-else>Нажмите на целевой элемент внутри сайта. Нажатие выберет его для шага.</p>
-            <ol v-if="interaction.actions.length" class="recorded-actions"><li v-for="(action, index) in interaction.actions" :key="index">{{ action.kind === 'select' ? 'Выбрать вариант: ' : 'Нажать: ' }}{{ action.label || 'элемент' }}</li></ol>
-            <button v-if="interaction.phase === 'record'" class="button primary" @click="chooseFinalTarget">Выбрать конечный элемент</button>
-            <button class="button subtle" @click="cancelInteraction">Отменить настройку</button>
-          </div>
-          <button v-else-if="!interaction" class="button full-width" :disabled="!mainReady || editingLocked" @click="beginPick(selected, device)">{{ isDraft(selected) ? 'Выбрать цель шага' : 'Изменить цель этой версии' }}</button>
+        <aside class="panel inspector">
+          <template v-if="selected">
+            <div class="panel-title"><h2>Настройка шага</h2><span v-if="isDraft(selected)" class="draft-badge">Черновик</span></div>
+            <label class="field">Заголовок<input v-model="selected.title" maxlength="120" :disabled="editingLocked"></label>
+            <label class="field">Текст подсказки<textarea v-model="selected.text" rows="4" maxlength="2000" :disabled="editingLocked" placeholder="Объясните действие пользователя" /></label>
 
-          <section class="versions-section" aria-label="Проверка версий">
-            <div class="panel-title"><h3>Доступность элемента</h3><button class="text-button" :disabled="!!interaction || editingLocked" @click="refreshChecks">Проверить</button></div>
-            <p class="hint">Обе версии проверяются автоматически после выбора цели.</p>
-            <article v-for="(view, kind) in DEVICES" :key="kind" class="version-card" :class="{ warning: !['ready', 'idle', 'pending'].includes(checks[kind].state), success: checks[kind].state === 'ready' }" :data-testid="'check-' + kind" :data-state="checks[kind].state">
-              <div class="version-card-title"><strong>{{ view.label }}</strong><span>{{ describeState(checks[kind].state) }}</span></div>
-              <template v-if="!['ready', 'idle', 'pending'].includes(checks[kind].state)">
-                <p v-if="checks[kind].state === 'offline'">{{ checks[kind].message }}</p>
-                <p v-else>Нужно добавить цель для {{ kind === 'mobile' ? 'мобильной' : 'компьютерной' }} версии. Если элемент скрыт, запишите действия, которые его открывают.</p>
-              </template>
-              <p v-else-if="checks[kind].state === 'ready'" class="hint">Элемент доступен{{ configFor(selected, kind).actions.length ? ' после подготовки' : '' }}.</p>
-              <button v-if="!isDraft(selected) && checks[kind].state !== 'offline'" class="button small" :disabled="!mainReady || !!interaction || editingLocked" @click="configureVariant(kind)">{{ checks[kind].state === 'ready' ? 'Изменить настройку' : 'Настроить версию' }}</button>
-            </article>
-          </section>
-          <label class="field color-field">Цвет кнопок тура<input v-model="color" type="color" :disabled="editingLocked"></label>
-          <p class="hint">{{ cloud ? 'Черновик сохраняется на сервере выбранного сайта.' : 'Черновик сохраняется в этом браузере.' }}</p>
-        </template>
-        <div v-else class="empty-inspector"><h2>Выберите шаг</h2><p>Здесь появятся текст подсказки и результаты проверки обеих версий сайта.</p></div>
-        <details class="events-details"><summary>События предпросмотра</summary><ul><li v-for="event in events" :key="event.id">{{ event.time }} · {{ event.scenarioName }} · {{ event.name }}</li></ul></details>
-      </aside>
+            <div v-if="interaction && interaction.kind !== 'trigger'" class="interaction-card" data-testid="interaction-card">
+              <strong>{{ interaction.phase === 'record' ? 'Подготовьте нужный элемент' : 'Выберите конечный элемент' }}</strong>
+              <p v-if="interaction.phase === 'record'">Откройте нужное меню, список или вкладку на сайте. Эти действия будут сохранены для версии «{{ DEVICES[interaction.device].label }}».</p>
+              <p v-else>Нажмите на целевой элемент внутри сайта. Нажатие выберет его для шага.</p>
+              <ol v-if="interaction.actions.length" class="recorded-actions"><li v-for="(action, index) in interaction.actions" :key="index">{{ action.kind === 'select' ? 'Выбрать вариант: ' : 'Нажать: ' }}{{ action.label || 'элемент' }}</li></ol>
+              <button v-if="interaction.phase === 'record'" class="button primary" @click="chooseFinalTarget">Выбрать конечный элемент</button>
+              <button class="button subtle" @click="cancelInteraction">Отменить настройку</button>
+            </div>
+            <button v-else-if="!interaction" class="button full-width" :disabled="!mainReady || editingLocked" @click="beginPick(selected, device)">{{ isDraft(selected) ? 'Выбрать цель шага' : 'Изменить цель этой версии' }}</button>
+
+            <details class="versions-section" aria-label="Проверка версий" :open="['hidden', 'missing', 'unconfigured', 'ambiguous', 'invalid', 'action-missing', 'action-invalid', 'error', 'offline'].includes(checks.mobile.state) || ['hidden', 'missing', 'unconfigured', 'ambiguous', 'invalid', 'action-missing', 'action-invalid', 'error', 'offline'].includes(checks.desktop.state)">
+              <summary>Доступность на компьютере и телефоне</summary>
+              <div class="panel-title"><h3>Доступность элемента</h3><button class="text-button" :disabled="!!interaction || editingLocked" @click="refreshChecks">Проверить</button></div>
+              <p class="hint">Обе версии проверяются автоматически после выбора цели.</p>
+              <article v-for="(view, kind) in DEVICES" :key="kind" class="version-card" :class="{ warning: !['ready', 'idle', 'pending'].includes(checks[kind].state), success: checks[kind].state === 'ready' }" :data-testid="'check-' + kind" :data-state="checks[kind].state">
+                <div class="version-card-title"><strong>{{ view.label }}</strong><span>{{ describeState(checks[kind].state) }}</span></div>
+                <template v-if="!['ready', 'idle', 'pending'].includes(checks[kind].state)">
+                  <p v-if="checks[kind].state === 'offline'">{{ checks[kind].message }}</p>
+                  <p v-else>Нужно добавить цель для {{ kind === 'mobile' ? 'мобильной' : 'компьютерной' }} версии. Если элемент скрыт, запишите действия, которые его открывают.</p>
+                </template>
+                <p v-else-if="checks[kind].state === 'ready'" class="hint">Элемент доступен{{ configFor(selected, kind).actions.length ? ' после подготовки' : '' }}.</p>
+                <button v-if="!isDraft(selected) && checks[kind].state !== 'offline'" class="button small" :disabled="!mainReady || !!interaction || editingLocked" @click="configureVariant(kind)">{{ checks[kind].state === 'ready' ? 'Изменить настройку' : 'Настроить версию' }}</button>
+              </article>
+            </details>
+            <label class="field color-field">Цвет кнопок тура<input v-model="color" type="color" :disabled="editingLocked"></label>
+            <p class="hint">{{ cloud ? 'Черновик сохраняется на сервере выбранного сайта.' : 'Черновик сохраняется в этом браузере.' }}</p>
+          </template>
+          <div v-else class="empty-inspector"><h2>Выберите шаг</h2><p>Здесь появятся текст подсказки и результаты проверки обеих версий сайта.</p></div>
+          <details class="events-details"><summary>События предпросмотра</summary><ul><li v-for="event in events" :key="event.id">{{ event.time }} · {{ event.scenarioName }} · {{ event.name }}</li></ul></details>
+        </aside>
+      </div>
     </div>
     <div v-if="checkJob" class="validation-frames" aria-hidden="true">
       <PreviewFrame :key="checkJob.id + '-desktop'" ref="desktopValidator" :url="checkJob.step.pageUrl" :width="DEVICES.desktop.width" :height="DEVICES.desktop.height" validator :identity="checkJob.id" @ready="validateVariant('desktop', $event)" @disconnected="validatorOffline('desktop', $event)" />
