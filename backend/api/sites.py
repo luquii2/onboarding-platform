@@ -34,6 +34,7 @@ def build_script_tag(site_id: str) -> str:
         "src": settings.widget_url,
         "data-site-id": site_id,
         "data-config-url": build_config_url(site_id),
+        "data-api-url": f"{settings.public_api_url}/api/v1",
         "data-editor-origin": settings.editor_origin,
     }
     parts = " ".join(f'{name}="{html.escape(value, quote=True)}"' for name, value in attrs.items())

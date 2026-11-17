@@ -67,6 +67,11 @@ def parse_site_url(raw: str) -> SiteAddress:
 
     return SiteAddress(base_url=origin + path, origin=origin, base_path=base_path)
 
+# адрес страницы без параметров (?) и якоря (#): origin + путь;
+# параметры отбрасываем — в них бывают e-mail, токены и другие личные данные
+def clean_page_url(url: str) -> str:
+    parts = urlsplit(url.strip())
+    return build_origin(parts) + encode_path(parts.path)
 
 # проверяет, что адрес страницы относится к сайту: тот же origin и путь внутри папки сайта
 def page_belongs_to_site(url: str, origin: str, base_path: str) -> bool:

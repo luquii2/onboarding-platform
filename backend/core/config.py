@@ -27,5 +27,9 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     # сколько часов после последнего сигнала виджет считается работающим
     widget_active_hours: int = 24
+    # не чаще чем раз в столько секунд записывать сигнал с одной и той же страницы
+    connect_throttle_seconds: int = 60
+    # сколько страниц сайта запоминать в списке «где видели виджет»
+    observed_pages_limit: int = 100
 
 settings = Settings()

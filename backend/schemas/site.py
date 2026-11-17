@@ -66,3 +66,4 @@ class InstallationResponse(CamelModel):
 class ObservedPage(CamelModel):
     url: str
     title: str = ""
+    last_seen_at: datetime | None = None

@@ -1,23 +1,17 @@
 import uvicorn
 
 from fastapi import Depends, FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from api.router import api_router
-from core.config import settings
+from core.cors import SplitCORSMiddleware
 from db import get_db
 
 app = FastAPI(title="Onboarding app API")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS: свои правила для панели и для виджета (core/cors.py)
+app.add_middleware(SplitCORSMiddleware)
 
 # подключение эндпоинтов
 app.include_router(api_router)
@@ -26,7 +20,7 @@ app.include_router(api_router)
 def test_connection(db: Session = Depends(get_db)):
     db.execute(text("SELECT 1"))
     return {
-        "status": "ok", 
+        "status": "ok",
         "database": "ok"
         }
 
