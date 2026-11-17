@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import PreviewFrame from './components/PreviewFrame.vue'
 import { createProjectPersistence } from './projectPersistence.js'
 import { DEFAULT_THEME, normalizeTheme } from './theme.js'
+import { widgetScriptTag } from './widgetInstallation.js'
 import { DEVICES, applyTarget, canonicalUrl, configFor, createStep, createScenario, createPlayback, exportProject, isDraft, normalizeActions, readProject, validationKey, confirmTrigger, triggerErrors, triggerIsReady, runtimeSignature } from './model.js'
 import './styles.css'
 
@@ -21,6 +22,7 @@ const saveLabel = computed(() => ({ saved: 'Сохранено на сервер
 let persistence
 const mainFrame = ref(null), desktopValidator = ref(null), mobileValidator = ref(null)
 const mainReady = ref(false), frameUrl = ref(SITE), frameEpoch = ref(0), currentPage = ref(SITE)
+const observedPages = ref([])
 watch(mainReady, ready => { if (ready) mainFrame.value?.request('theme', { theme: runtimeTheme.value }).catch(() => {}) })
 onMounted(async () => {
   if (!cloud || !props.api.theme) return
@@ -30,6 +32,17 @@ onMounted(async () => {
     runtimeTheme.value = normalizeTheme(value)
     if (mainReady.value) await mainFrame.value?.request('theme', { theme: runtimeTheme.value }).catch(() => {})
   } catch { /* Editing and saving the project remain available with the default theme. */ }
+})
+onMounted(async () => {
+  if (!cloud || !props.api.observedPages) return
+  try {
+    const pages = await props.api.observedPages(props.site.id)
+    if (disposed || !Array.isArray(pages)) return
+    observedPages.value = pages.slice(0, 100).flatMap(page => {
+      if (typeof page?.url !== 'string') return []
+      try { return [{ ...page, url: canonicalUrl(page.url, SITE), title: String(page.title || '').slice(0, 256) }] } catch { return [] }
+    })
+  } catch { /* The current page and draft pages remain available while this request is unavailable. */ }
 })
 const project = ref(readProject(null, SITE))
 const scenario = computed(() => project.value.scenarios.find(item => item.id === project.value.activeScenarioId) || project.value.scenarios[0])
@@ -48,7 +61,7 @@ const viewport = computed(() => DEVICES[device.value])
 const checkJob = ref(null), checks = ref({ desktop: { state: 'idle' }, mobile: { state: 'idle' } })
 let navigationIntent = '', validationTimer, notificationTimer, highlightVersion = 0, sequence = 0, disposed = false, runRequest = 0, triggerRequest = 0
 const availablePages = computed(() => {
-  const urls = new Set([SITE, currentPage.value, ...project.value.pages.map(page => page.url)])
+  const urls = new Set([SITE, currentPage.value, ...project.value.pages.map(page => page.url), ...observedPages.value.map(page => page.url)])
   for (const item of project.value.scenarios) {
     for (const step of item.steps) urls.add(step.pageUrl)
     if (item.trigger.pageUrl) urls.add(item.trigger.pageUrl)
@@ -66,9 +79,8 @@ const waitingMessage = computed(() => {
 })
 const configUrl = ref(cloud ? new URL(props.api.configUrl(props.site.id), location.href).href : new URL('onboarding.json', SITE).href)
 const installScript = computed(() => {
-  const attr = value => String(value).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;')
   const source = new URL(import.meta.env.BASE_URL + 'widget.js', location.origin).href
-  return '<script src="' + attr(source) + '" data-site-id="' + attr(project.value.siteId) + '" data-config-url="' + attr(configUrl.value) + '" data-editor-origin="' + attr(location.origin) + '" defer></' + 'script>'
+  return widgetScriptTag({ src: source, siteId: project.value.siteId, configUrl: configUrl.value, editorOrigin: location.origin, ...(cloud ? { apiUrl: new URL(props.api.base, location.href).href } : {}) })
 })
 
 try {
@@ -198,7 +210,7 @@ function pageName(url) {
 
 function pageLabel(value) {
   const url = new URL(value)
-  const title = project.value.pages.find(page => page.url === value)?.title || pageName(value)
+  const title = project.value.pages.find(page => page.url === value)?.title || observedPages.value.find(page => page.url === value)?.title || pageName(value)
   const base = new URL(SITE).pathname
   const path = url.pathname.startsWith(base) ? '/' + url.pathname.slice(base.length) : url.pathname
   return title + ' (' + path + url.search + ')'

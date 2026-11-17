@@ -1,5 +1,6 @@
 (() => {
   const settings = { ...document.currentScript?.dataset }
+  const WIDGET_VERSION = '3.1.0'
   const editorOrigin = settings.editorOrigin === 'self' ? location.origin : settings.editorOrigin
   const embedded = !!editorOrigin && window.parent !== window
   if ((!embedded && !settings.configUrl) || window.__onboardingPrototype === 'v3') return
@@ -554,7 +555,37 @@
     return true
   }
 
+  async function reportConnection() {
+    if (embedded || !siteId) return
+    let timer
+    try {
+      let apiUrl
+      if (settings.apiUrl) apiUrl = new URL(settings.apiUrl, location.href)
+      else {
+        apiUrl = new URL(settings.configUrl, location.href)
+        const match = /^(.*)\/public\/sites\/[^/]+\/config\/?$/.exec(apiUrl.pathname)
+        if (!match) return
+        apiUrl.pathname = match[1] || '/'
+        apiUrl.search = ''; apiUrl.hash = ''
+      }
+      if (!['http:', 'https:'].includes(apiUrl.protocol) || apiUrl.username || apiUrl.password || apiUrl.search || apiUrl.hash) throw new Error('Проверьте data-api-url виджета.')
+      apiUrl.pathname = apiUrl.pathname.replace(/\/+$/, '') + '/public/sites/' + encodeURIComponent(siteId) + '/connect'
+      const page = new URL(location.href)
+      page.search = ''; page.hash = ''
+      const controller = new AbortController()
+      timer = setTimeout(() => controller.abort(), 10000)
+      const response = await fetch(apiUrl.href, {
+        method: 'POST', credentials: 'omit', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
+        body: JSON.stringify({ pageUrl: page.href, pageTitle: Array.from(document.title.trim()).slice(0, 256).join(''), widgetVersion: WIDGET_VERSION, configVersion }),
+      })
+      if (!response.ok) throw new Error('Сервер не принял сигнал подключения (HTTP ' + response.status + ').')
+    } catch (error) { console.warn('[Onboarding] Не удалось подтвердить подключение виджета:', error.message) }
+    finally { clearTimeout(timer) }
+  }
+
   const ready = connect().catch(error => { emit('configuration_error', { message: error.message }); console.warn('[Onboarding]', error.message); return false })
+  // The installation signal must also reach an unpublished site, without delaying or cancelling a tour.
+  ready.then(reportConnection)
   window.Onboarding = {
     ready,
     start: async id => { if (!(await ready)) return false; return launchScenario(id) },

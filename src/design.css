@@ -293,6 +293,10 @@ h3 { font-size: 14px; font-weight: 700; }
 .platform-dialog h2 { font-size: 24px; }
 .platform-dialog p { font-size: 14px; line-height: 1.6; }
 .platform-dialog::backdrop { background: #0f172a66; }
+.observed-pages { margin: 20px 0; padding: 16px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.observed-pages ul { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 12px; }
+.observed-pages a { color: var(--primary); font-size: 13px; overflow-wrap: anywhere; }
+.observed-pages small { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; }
 .dialog-actions { margin-top: 28px; }
 .script-output { background: var(--ink) !important; color: #e2e8f0 !important; border: 0 !important; padding: 16px !important; }
 .publication-history, .delete-site-settings { border-color: var(--border); }

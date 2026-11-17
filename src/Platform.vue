@@ -31,7 +31,9 @@ const editor = ref(null), editorSite = ref(null), editorDocument = ref(null)
 const siteDialog = ref(null), siteSaving = ref(false), siteError = ref(''), siteFields = ref([]), siteForm = ref({ name: '', baseUrl: '' })
 const manageDialog = ref(null), managedSite = ref(null), managedName = ref(''), manageBusy = ref(false), manageError = ref('')
 const installDialog = ref(null), installation = ref(null), installSite = ref(null), installError = ref(''), installBusy = ref(false), publicResult = ref(null), copied = ref(false)
-let routeTicket = 0, authTicket = 0, disposed = false
+const installationPages = ref([]), installPagesError = ref('')
+const demoSettingsCopied = ref(false)
+let routeTicket = 0, authTicket = 0, installationRequest = 0, disposed = false
 const api = computed(() => createApi({ baseUrl: apiBase.value, getToken: () => token.value, onUnauthorized: expiredToken => {
   if (token.value !== expiredToken) return
   credentials.value.email = user.value?.email || credentials.value.email
@@ -44,6 +46,12 @@ const api = computed(() => createApi({ baseUrl: apiBase.value, getToken: () => t
 const isRegister = computed(() => authMode.value === 'register')
 const displayName = computed(() => user.value?.companyName || user.value?.email || '')
 const installConfigUrl = computed(() => installation.value?.configUrl || '')
+const localDemoSettings = computed(() => {
+  if (!import.meta.env.DEV || !installSite.value) return ''
+  const site = new URL(installSite.value.baseUrl), demo = new URL('demo/', location.href)
+  if (site.origin !== location.origin || site.href !== demo.href) return ''
+  return 'VITE_WIDGET_SITE_ID=' + installSite.value.id + '\nVITE_WIDGET_CONFIG_URL=' + new URL(api.value.configUrl(installSite.value.id), location.href).href
+})
 const showShell = computed(() => !['auth', 'session-error'].includes(mode.value) && !!user.value)
 const activeNav = computed(() => mode.value === 'editor' ? 'tours' : mode.value)
 const pageTitle = computed(() => ({ sites: 'Сайты', tours: 'Туры', analytics: 'Аналитика', appearance: 'Настройка вида подсказок', editor: editorTitle.value })[mode.value] || 'Онбординг')
@@ -51,6 +59,7 @@ const assetBase = import.meta.env.BASE_URL + 'design/'
 
 function clearSession() {
   token.value = null; user.value = null; sites.value = []; managedSite.value = null; manageBusy.value = false
+  installationRequest++; installBusy.value = false; installation.value = null; installationPages.value = []; publicResult.value = null
   manageDialog.value?.close()
   try { sessionStorage.removeItem(SESSION_KEY) } catch { /* Current in-memory state is still cleared. */ }
 }
@@ -62,7 +71,7 @@ function validUser(value) {
   return value
 }
 function fieldError(fields, name) { return fields.find(field => field.path === name)?.message || '' }
-function statusLabel(status) { return ({ connected: 'Виджет установлен', inactive: 'Виджет не отвечает', not_detected: 'Виджет не найден' })[status] || 'Статус неизвестен' }
+function statusLabel(status) { return ({ connected: 'Виджет установлен', inactive: 'Нет недавних сигналов', not_detected: 'Виджет не найден' })[status] || 'Статус неизвестен' }
 function safeSiteUrl(value) {
   try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : undefined } catch { return undefined }
 }
@@ -275,27 +284,49 @@ async function deleteSite() {
 
 async function openInstallation(site) {
   installSite.value = site; installation.value = null; publicResult.value = null; installError.value = ''; copied.value = false
-  installDialog.value.showModal(); installBusy.value = true
-  try {
-    const result = await api.value.installation(site.id)
-    if (result.siteId !== site.id || typeof result.scriptTag !== 'string') throw new ApiError('Сервер вернул некорректный код подключения.')
-    installation.value = result
-  } catch (error) { installError.value = error.message }
-  finally { installBusy.value = false }
+  installationPages.value = []; installPagesError.value = ''; demoSettingsCopied.value = false
+  installDialog.value.showModal()
+  await refreshInstallation()
 }
+async function refreshInstallation() {
+  if (!installSite.value) return
+  const client = api.value, accountToken = token.value, siteId = installSite.value.id, ticket = ++installationRequest
+  installBusy.value = true; installError.value = ''; installPagesError.value = ''
+  try {
+    const [metadata, pages] = await Promise.allSettled([client.installation(siteId), client.observedPages(siteId)])
+    if (disposed || ticket !== installationRequest || client !== api.value || accountToken !== token.value) return
+    if (metadata.status === 'rejected') throw metadata.reason
+    const result = metadata.value
+    if (result.siteId !== siteId || typeof result.scriptTag !== 'string') throw new ApiError('Сервер вернул некорректный код подключения.')
+    installation.value = result
+    const status = { installationStatus: result.installationStatus, lastSeenAt: result.lastSeenAt }
+    sites.value = sites.value.map(site => site.id === siteId ? { ...site, ...status } : site)
+    if (editorSite.value?.id === siteId) editorSite.value = { ...editorSite.value, ...status }
+    if (pages.status === 'fulfilled' && Array.isArray(pages.value)) installationPages.value = pages.value.filter(page => safeSiteUrl(page?.url)).slice(0, 100)
+    else installPagesError.value = 'Не удалось загрузить список страниц. ' + (pages.reason?.message || '')
+  } catch (error) { if (ticket === installationRequest && client === api.value && accountToken === token.value) installError.value = error.message }
+  finally { if (ticket === installationRequest) installBusy.value = false }
+}
+function installationClosed() { installationRequest++; installBusy.value = false }
 async function copyScript() {
   try { await navigator.clipboard.writeText(installation.value.scriptTag); copied.value = true }
   catch { installError.value = 'Не удалось скопировать автоматически. Выделите и скопируйте код из поля.' }
 }
+async function copyDemoSettings() {
+  try { await navigator.clipboard.writeText(localDemoSettings.value); demoSettingsCopied.value = true }
+  catch { installError.value = 'Выделите и скопируйте настройки демосайта из поля.' }
+}
 async function checkPublicConfig() {
+  const client = api.value, site = installSite.value, ticket = ++installationRequest
   installBusy.value = true; installError.value = ''; publicResult.value = null
   try {
-    const result = await api.value.publicConfig(installSite.value.id)
-    if (result?.siteId !== installSite.value.id || result?.schema !== 1 || !Array.isArray(result.scenarios)) throw new ApiError('Сервер вернул некорректную конфигурацию виджета.')
-    if (result.origin && result.origin !== new URL(installSite.value.baseUrl).origin) throw new ApiError('Публичная конфигурация относится к другому домену. Проверьте GET /public/sites/{siteId}/config.')
+    const result = await client.publicConfig(site.id)
+    if (disposed || ticket !== installationRequest || client !== api.value) return
+    if (result?.siteId !== site.id || result?.schema !== 1 || !Array.isArray(result.scenarios)) throw new ApiError('Сервер вернул некорректную конфигурацию виджета.')
+    if (result.origin && result.origin !== new URL(site.baseUrl).origin) throw new ApiError('Публичная конфигурация относится к другому домену. Проверьте GET /public/sites/{siteId}/config.')
     publicResult.value = { version: result.version, count: result.scenarios.length }
-  } catch (error) { installError.value = error.message }
-  finally { installBusy.value = false }
+  } catch (error) { if (ticket === installationRequest && client === api.value) installError.value = error.message }
+  finally { if (ticket === installationRequest) installBusy.value = false }
 }
 
 async function onHashChange() {
@@ -425,10 +456,18 @@ onBeforeUnmount(() => { disposed = true; routeTicket++; authTicket++; window.rem
       <details class="delete-site-settings"><summary>Удаление сайта</summary><p class="hint">Сайт, его сценарии и все публикации будут удалены без возможности восстановления.</p><button class="button danger-button" :disabled="manageBusy" @click="deleteSite">Удалить сайт</button></details>
     </dialog>
 
-    <dialog ref="installDialog" class="platform-dialog installation-dialog" aria-labelledby="installation-title">
+    <dialog ref="installDialog" class="platform-dialog installation-dialog" aria-labelledby="installation-title" @close="installationClosed">
       <div class="dialog-heading"><h2 id="installation-title">Подключение {{ installSite?.name }}</h2><button class="dialog-close" aria-label="Закрыть код подключения" @click="installDialog.close()">×</button></div><p class="hint">Установите этот скрипт на все страницы, участвующие в обучении. Для SPA достаточно общей точки входа.</p>
       <p v-if="installBusy" role="status">Загружаем данные с сервера…</p><p v-if="installError" class="form-error" role="alert">{{ installError }}</p>
-      <template v-if="installation"><label class="field">Скрипт виджета<textarea class="script-output" :value="installation.scriptTag" rows="5" readonly @focus="$event.target.select()" /></label><div class="inline-actions"><button class="button primary" @click="copyScript">{{ copied ? 'Скопировано' : 'Копировать скрипт' }}</button><button class="button" :disabled="installBusy" @click="checkPublicConfig">Проверить конфигурацию с сервера</button></div><p class="hint">{{ statusLabel(installation.installationStatus) }} · {{ date(installation.lastSeenAt) }}</p><a :href="safeSiteUrl(installConfigUrl)" target="_blank" rel="noopener noreferrer" class="site-url">Открыть JSON конфигурации ↗</a></template>
+      <template v-if="installation">
+        <label class="field">Скрипт виджета<textarea class="script-output" :value="installation.scriptTag" rows="5" readonly @focus="$event.target.select()" /></label>
+        <div class="inline-actions"><button class="button primary" @click="copyScript">{{ copied ? 'Скопировано' : 'Копировать скрипт' }}</button><button class="button" :disabled="installBusy" @click="refreshInstallation">Обновить статус</button><a class="button" :href="safeSiteUrl(installSite.baseUrl)" target="_blank" rel="noopener noreferrer">Открыть сайт</a></div>
+        <p class="hint installation-status" role="status">{{ statusLabel(installation.installationStatus) }} · {{ date(installation.lastSeenAt) }}</p>
+        <p class="hint">После установки скрипта откройте сайт отдельной вкладкой, затем обновите статус. Предпросмотр в конструкторе не отправляет сигнал установки.</p>
+        <details v-if="localDemoSettings" class="local-demo-settings"><summary>Локальный демосайт</summary><p class="hint">Чтобы демосайт получал туры этого сайта с сервера, добавьте строки ниже в файл .env.local в корне проекта и перезапустите npm run dev.</p><textarea class="script-output" :value="localDemoSettings" rows="3" readonly aria-label="Настройки локального демосайта" @focus="$event.target.select()" /><button class="button small" @click="copyDemoSettings">{{ demoSettingsCopied ? 'Скопировано' : 'Копировать настройки демо' }}</button></details>
+        <section class="observed-pages" aria-label="Страницы с виджетом"><h3>Страницы с виджетом</h3><p v-if="installPagesError" class="form-note">{{ installPagesError }}</p><ul v-else-if="installationPages.length"><li v-for="page in installationPages" :key="page.url"><a :href="safeSiteUrl(page.url)" target="_blank" rel="noopener noreferrer">{{ page.title || page.url }}</a><small>{{ date(page.lastSeenAt) }}</small></li></ul><p v-else class="hint">Сигналов со страниц пока нет.</p></section>
+        <div class="inline-actions"><button class="button" :disabled="installBusy" @click="checkPublicConfig">Проверить конфигурацию с сервера</button><a :href="safeSiteUrl(installConfigUrl)" target="_blank" rel="noopener noreferrer" class="text-button">Открыть JSON конфигурации ↗</a></div>
+      </template>
       <p v-if="publicResult" class="form-success" role="status">Конфигурация получена с сервера. Версия {{ publicResult.version }}, сценариев: {{ publicResult.count }}.</p>
     </dialog>
   </div>
